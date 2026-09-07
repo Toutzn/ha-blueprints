@@ -1,0 +1,778 @@
+blueprint:
+  name: 🚶💡 Bewegungslicht mit Dunkelheitsprüfung und Schaltbestätigung
+  author: Torsten Wilms
+  source_url: https://github.com/Toutzn/ha-blueprints/blob/main/blueprints/automation/bewegungslicht.yaml
+  homeassistant:
+    min_version: "2024.10.0"
+  description: >-
+    Schaltet Licht bei Bewegung ein und nach einer Nachlaufzeit ohne Bewegung wieder aus –
+    für einen Melder oder für mehrere Melder, die gemeinsam dasselbe Licht versorgen.
+
+
+    **Mehrere Melder, ein Licht:** Jede Bewegung an einem der Melder verlängert die Zeit.
+    Die Nachlaufzeit beginnt erst, wenn **alle** Melder wieder frei melden.
+
+
+    **Dunkelheit** lässt sich auf zwei Wegen prüfen – über den Sonnenstand (mit Versatz
+    vor Sonnenuntergang und nach Sonnenaufgang) und über einen Helligkeitssensor in Lux.
+    Beide sind einzeln, zusammen (UND) oder alternativ (ODER) nutzbar. So kann man mit der
+    Sonnen-Bedingung starten und die Lux-Schwelle in Ruhe dazunehmen.
+
+
+    **Schaltbestätigung:** Nach jedem Befehl wird der Ist-Zustand zurückgelesen, bei Bedarf
+    wiederholt und ein endgültiger Fehlschlag gemeldet – ein verlorener Funkbefehl fällt
+    nicht durchs Raster. Das gilt für das Ein- **und** das Ausschalten.
+
+
+    **Manuelles Schalten:** Wird das Licht von Hand eingeschaltet, übernimmt die Automation
+    trotzdem die Abschaltung. Die Nachlaufzeit beginnt dabei erst, wenn die Melder frei
+    melden – man steht also nicht im Dunkeln. Wird das Licht während der Wartezeit von Hand
+    ausgeschaltet, bricht der Durchlauf ab.
+
+
+    **Dimmen:** Für `light.*`-Ziele lassen sich Helligkeit und Übergangszeit setzen,
+    optional mit abweichendem Nachtwert in einem Zeitfenster. Gesetzt wird nur beim
+    Einschalten eines ausgeschalteten Lichts – wer von Hand dimmt, wird nicht überstimmt.
+
+
+    **Sperren:** Beliebige Entitäten können die Automation pausieren, wahlweise nur das
+    Ein-, nur das Ausschalten oder beides.
+
+
+    **Ein Durchlauf pro Automation** (`mode: restart`) – jede neue Bewegung setzt die Zeit
+    zurück, ohne dass ein Timer-Helfer nötig wäre.
+  domain: automation
+
+  input:
+    bewegung_licht:
+      name: Bewegung und Licht
+      icon: mdi:motion-sensor
+      collapsed: false
+      input:
+        bewegungsmelder:
+          name: Bewegungsmelder
+          description: >-
+            Ein oder mehrere Melder, die dasselbe Licht versorgen – typischerweise die
+            `binary_sensor.*_occupancy`- oder `*_motion`-Entität des Geräts.
+
+
+            Bei mehreren Meldern gilt: **eine** Meldung schaltet ein, die Nachlaufzeit
+            beginnt aber erst, wenn **alle** wieder auf `off` stehen.
+          selector:
+            entity:
+              multiple: true
+              filter:
+                - domain: binary_sensor
+                  device_class: motion
+                - domain: binary_sensor
+                  device_class: occupancy
+                - domain: binary_sensor
+                  device_class: presence
+
+        lichter:
+          name: Licht
+          description: >-
+            Die zu schaltenden Entitäten. Bewusst **Entitäten und keine Geräte**: Nur mit
+            einer Entity-ID lässt sich der Ist-Zustand zurücklesen, sonst wäre die
+            Schaltbestätigung unmöglich.
+
+
+            Gemischte Ziele sind erlaubt (`light.*`, `switch.*`, `input_boolean.*`); die
+            Dimm-Einstellungen weiter unten wirken nur auf `light.*`.
+          selector:
+            entity:
+              multiple: true
+              filter:
+                - domain: light
+                - domain: switch
+                - domain: input_boolean
+
+        nachlaufzeit:
+          name: Nachlaufzeit (Sekunden)
+          description: >-
+            So lange bleibt das Licht an, nachdem der letzte Melder frei gemeldet hat.
+
+
+            Die Zeit läuft **nach** der Meldedauer des Melders – viele Melder halten selbst
+            schon 10–60 s, das addiert sich. Flur 30–60 s, Bad 120–300 s, Arbeitszimmer
+            deutlich mehr.
+          default: 60
+          selector:
+            number:
+              min: 1
+              max: 7200
+              step: 1
+              unit_of_measurement: s
+              mode: box
+
+        sicherheits_timeout:
+          name: Sicherheits-Timeout (Minuten)
+          description: >-
+            Notbremse für den Fall, dass ein Melder auf `on` hängen bleibt: So lange wartet
+            die Automation höchstens auf „keine Bewegung mehr", danach läuft die
+            Nachlaufzeit trotzdem ab und das Licht geht aus.
+
+
+            `0` schaltet die Notbremse ab; dann greift eine harte Obergrenze von 24 Stunden.
+            In Räumen, in denen man sich lange ruhig aufhält (Wohnzimmer, Büro), auf `0`
+            lassen oder großzügig wählen – sonst geht das Licht mitten im Betrieb aus.
+          default: 0
+          selector:
+            number:
+              min: 0
+              max: 1440
+              step: 5
+              unit_of_measurement: min
+              mode: box
+
+    dunkelheit:
+      name: Wann ist es dunkel genug?
+      icon: mdi:theme-light-dark
+      collapsed: false
+      input:
+        dunkel_modus:
+          name: Prüfung
+          description: >-
+            Welche Bedingung entscheidet, ob bei Bewegung eingeschaltet wird.
+
+
+            - **Sonnenstand** – bewährt und ohne zusätzliche Hardware.
+
+            - **Helligkeitssensor** – genauer, berücksichtigt bedeckten Himmel und
+              Nachbarlicht, braucht aber eine passende Schwelle.
+
+            - **Beides (UND)** – nur einschalten, wenn es dunkel ist *und* gemessen dunkel:
+              streng, spart am meisten, verzeiht aber keinen defekten Sensor.
+
+            - **Beides (ODER)** – einschalten, sobald eine der beiden Bedingungen zutrifft:
+              der sichere Einstieg, wenn man die Lux-Schwelle noch sucht.
+
+            - **Immer** – keine Prüfung, Licht geht bei jeder Bewegung an.
+
+
+            Geprüft wird **nur im Moment des Einschaltens**. Dass das eigene Licht den
+            Lux-Wert danach hochzieht, ist deshalb egal – und wenn es während der Brenndauer
+            hell wird, geht das Licht trotzdem regulär nach der Nachlaufzeit aus.
+          default: sonne
+          selector:
+            select:
+              mode: dropdown
+              options:
+                - label: Sonnenstand
+                  value: sonne
+                - label: Helligkeitssensor (Lux)
+                  value: helligkeit
+                - label: Beides (UND – beide müssen zutreffen)
+                  value: beides_und
+                - label: Beides (ODER – eines genügt)
+                  value: beides_oder
+                - label: Immer einschalten (keine Prüfung)
+                  value: immer
+
+        offset_sonnenuntergang:
+          name: Versatz Sonnenuntergang
+          description: >-
+            Ab wann relativ zum Sonnenuntergang „dunkel" gilt. Format `HH:MM:SS`,
+            **negativ = früher**.
+
+
+            `-00:10:00` heißt: schon 10 Minuten vor Sonnenuntergang. Für einen Flur ohne
+            Fenster darf der Wert deutlich größer sein (`-01:00:00`), draußen eher `00:00:00`.
+
+
+            Wird nur in den Modi mit Sonnenstand ausgewertet. Ein ungültiger Text lässt die
+            Automation nicht laden – bitte das Format einhalten.
+          default: "-00:10:00"
+          selector:
+            text:
+
+        offset_sonnenaufgang:
+          name: Versatz Sonnenaufgang
+          description: >-
+            Bis wann relativ zum Sonnenaufgang „dunkel" gilt. Format `HH:MM:SS`,
+            **positiv = länger**.
+
+
+            `00:30:00` heißt: noch 30 Minuten nach Sonnenaufgang. Auch hier gilt für dunkle
+            Innenräume ein großzügigerer Wert.
+          default: "00:30:00"
+          selector:
+            text:
+
+        helligkeitssensoren:
+          name: Helligkeitssensor
+          description: >-
+            Optional. Der Lux-Sensor des Bewegungsmelders (`sensor.*_illuminance`) oder ein
+            beliebiger anderer Helligkeitssensor im Raum.
+
+
+            Bei **mehreren** Sensoren entscheidet der **kleinste** Messwert – es genügt
+            also, wenn eine Ecke dunkel ist. Ist kein Sensor ausgewählt oder liefert keiner
+            eine Zahl, gilt die Lux-Bedingung als **erfüllt**; die Automation blockiert
+            nicht wegen eines fehlenden Sensors.
+          default: []
+          selector:
+            entity:
+              multiple: true
+              filter:
+                - domain: sensor
+                  device_class: illuminance
+
+        lux_schwelle:
+          name: Lux-Schwelle
+          description: >-
+            Unterhalb dieses Messwerts gilt der Raum als dunkel genug.
+
+
+            Anhaltswerte: heller Tag im Raum 200–1000 lx, bedeckter Tag am Fenster
+            50–200 lx, Dämmerung 5–50 lx, Nacht ohne Licht 0–2 lx. Die richtige Schwelle
+            liest man am besten aus dem Verlauf des eigenen Sensors ab: den Wert nehmen,
+            ab dem man selbst Licht machen würde, und etwas Luft nach oben lassen.
+          default: 20
+          selector:
+            number:
+              min: 0
+              max: 2000
+              step: 1
+              unit_of_measurement: lx
+              mode: box
+
+    einschaltverhalten:
+      name: Einschaltverhalten
+      icon: mdi:lightbulb-on-outline
+      collapsed: true
+      input:
+        einschalt_helligkeit:
+          name: Helligkeit beim Einschalten (%)
+          description: >-
+            Nur für `light.*`-Ziele. `0` bedeutet: Helligkeit nicht vorgeben, das Licht
+            kommt mit seinem zuletzt genutzten Wert.
+
+
+            Gesetzt wird ausschließlich beim Einschalten eines Lichts, das gerade **aus**
+            ist. Ein Licht, das schon brennt, wird nie nachgedimmt – manuelle Einstellungen
+            bleiben also erhalten.
+          default: 0
+          selector:
+            number:
+              min: 0
+              max: 100
+              step: 1
+              unit_of_measurement: "%"
+              mode: slider
+
+        uebergangszeit:
+          name: Übergangszeit (Sekunden)
+          description: >-
+            Weiches Aufblenden für `light.*`-Ziele. `0` = ohne Übergang. Wird nur
+            mitgesendet, wenn eine Helligkeit vorgegeben ist; Lampen ohne
+            Transition-Unterstützung ignorieren den Wert.
+          default: 0
+          selector:
+            number:
+              min: 0
+              max: 30
+              step: 1
+              unit_of_measurement: s
+              mode: box
+
+        nachtmodus:
+          name: Abweichende Helligkeit nachts
+          description: >-
+            Schaltet in einem Zeitfenster auf einen zweiten Helligkeitswert um – für den
+            nächtlichen Gang ins Bad, der nicht mit voller Leistung blenden soll.
+          default: false
+          selector:
+            boolean:
+
+        nacht_start:
+          name: Nachtfenster – Beginn
+          default: "23:00:00"
+          selector:
+            time:
+
+        nacht_ende:
+          name: Nachtfenster – Ende
+          description: Ein Fenster über Mitternacht ist erlaubt (z. B. 23:00 bis 06:00).
+          default: "06:00:00"
+          selector:
+            time:
+
+        nacht_helligkeit:
+          name: Helligkeit im Nachtfenster (%)
+          description: >-
+            Gilt nur bei aktivem Nachtmodus. `0` bedeutet auch hier: keine Vorgabe.
+          default: 20
+          selector:
+            number:
+              min: 0
+              max: 100
+              step: 1
+              unit_of_measurement: "%"
+              mode: slider
+
+    manuell:
+      name: Manuelles Schalten
+      icon: mdi:hand-back-right-outline
+      collapsed: true
+      input:
+        manueller_trigger:
+          name: Auf manuelles Einschalten reagieren
+          description: >-
+            Wird das Licht von Hand eingeschaltet – am Wandschalter, in der App oder per
+            Sprachbefehl – übernimmt die Automation die Abschaltung, ohne dass vorher
+            Bewegung nötig war. Die Nachlaufzeit startet, sobald die Melder frei melden.
+
+
+            Schaltvorgänge, die von einer **anderen Automation oder einem Skript** ausgelöst
+            wurden, werden dabei ignoriert (erkennbar am Kontext des Zustandswechsels) –
+            sonst würde sich die Automation an ihrem eigenen Einschalten aufhängen.
+          default: true
+          selector:
+            boolean:
+
+        manuelles_aus_respektieren:
+          name: Manuelles Ausschalten respektieren
+          description: >-
+            Geht das Licht während der Wartezeit von Hand aus, bricht der Durchlauf ab,
+            statt später noch einen Ausschaltbefehl samt Erfolgsprüfung zu senden.
+
+
+            Aus lassen kann man das, wenn Ausschaltbefehle im Funknetz gern verloren gehen
+            und lieber einer zu viel gesendet werden soll.
+          default: true
+          selector:
+            boolean:
+
+    sperren:
+      name: Sperren
+      icon: mdi:lock-outline
+      collapsed: true
+      input:
+        sperr_entitaeten:
+          name: Sperr-Entitäten
+          description: >-
+            Solange eine dieser Entitäten `on` ist, greift die unten gewählte Sperre.
+            Typisch: ein `input_boolean` für Putzmodus, Gäste, Party oder Urlaub.
+          default: []
+          selector:
+            entity:
+              multiple: true
+
+        sperr_verhalten:
+          name: Was wird gesperrt?
+          description: >-
+            - **Beides** – die Automation macht gar nichts, das Licht bleibt so, wie es ist.
+
+            - **Nur Ausschalten** – Licht darf noch automatisch angehen, geht aber nicht von
+              allein aus (Putzmodus, Gäste).
+
+            - **Nur Einschalten** – Bewegung schaltet nicht mehr ein, ein brennendes Licht
+              wird aber weiterhin abgeschaltet (Beamerabend, Nachtruhe).
+
+
+            Geprüft wird zu Beginn und noch einmal direkt vor dem Ausschalten – eine Sperre,
+            die während der Nachlaufzeit gesetzt wird, greift also noch.
+          default: beides
+          selector:
+            select:
+              mode: dropdown
+              options:
+                - label: Beides (Automation pausiert)
+                  value: beides
+                - label: Nur Ausschalten
+                  value: nur_ausschalten
+                - label: Nur Einschalten
+                  value: nur_einschalten
+
+    bestaetigung:
+      name: Schaltbestätigung
+      icon: mdi:check-decagram-outline
+      collapsed: true
+      input:
+        pruefung_verzoegerung:
+          name: Wartezeit vor der Prüfung (Sekunden)
+          description: >-
+            So lange wird nach einem Schaltbefehl gewartet, bevor der Ist-Zustand
+            zurückgelesen wird. Muss länger sein, als der Aktor für Schalten und Rückmeldung
+            braucht. Zigbee und Z-Wave: 2–5 s, WLAN-Steckdosen über Cloud: eher mehr.
+          default: 5
+          selector:
+            number:
+              min: 1
+              max: 60
+              step: 1
+              unit_of_measurement: s
+              mode: box
+
+        max_versuche:
+          name: Maximale Schaltversuche
+          description: >-
+            So oft wird ein Befehl höchstens wiederholt, bevor der Versuch als
+            fehlgeschlagen gilt. Wiederholt wird immer nur für die Entitäten, die noch nicht
+            im Soll sind.
+          default: 3
+          selector:
+            number:
+              min: 1
+              max: 10
+              step: 1
+              mode: box
+
+    meldungen:
+      name: Meldungen bei Fehlschlag
+      icon: mdi:bell-alert-outline
+      collapsed: true
+      input:
+        push_geraete_fehler:
+          name: Push-Geräte
+          description: >-
+            Geräte mit der Home-Assistant-Companion-App, die eine Meldung bekommen, wenn ein
+            Licht nach allen Versuchen nicht reagiert hat. Im Normalbetrieb wird **nichts**
+            gesendet – ein Bewegungslicht schaltet zu oft für Erfolgsmeldungen.
+
+
+            Leere Auswahl = kein Push.
+          default: []
+          selector:
+            device:
+              multiple: true
+              filter:
+                - integration: mobile_app
+
+        push_titel:
+          name: Titel der Push-Meldung
+          default: Bewegungslicht
+          selector:
+            text:
+
+        push_kritisch:
+          name: Als kritischen Alarm senden
+          description: >-
+            iOS: Die Meldung klingelt auch bei stummem Telefon und aktivem Fokus. Auf
+            Android wirkungslos.
+          default: false
+          selector:
+            boolean:
+
+        aktion_bei_fehler:
+          name: Zusätzliche Aktion bei Fehlschlag
+          description: >-
+            Läuft **zusätzlich** zum Push, wenn ein Licht nicht geschaltet werden konnte –
+            etwa für TTS, eine Signallampe oder einen Logbuch-Eintrag.
+
+
+            Hinweis: Das Feld „Entitäts-ID" der voreingestellten Platzhalter-Aktion ist
+            **kein Empfänger**. Für Push aufs Handy die Geräteauswahl oben nutzen.
+
+
+            Verfügbare Variablen: `phase` (`einschalten` / `ausschalten`), `restliche`
+            (Liste der Entitäten, die nicht reagiert haben), `versuche`, `melde_text`.
+          default:
+            - action: persistent_notification.create
+              data:
+                title: Bewegungslicht
+                message: "{{ melde_text }}"
+          selector:
+            action:
+
+mode: restart
+max_exceeded: silent
+
+triggers:
+  # Bewegung ist der eigentliche Auslöser. Explizites "to" verhindert, dass reine
+  # Attributänderungen des Melders (Batterie, Linkquality) einen Durchlauf starten.
+  - trigger: state
+    id: bewegung
+    entity_id: !input bewegungsmelder
+    to: "on"
+
+  # Manuelles Einschalten: damit auch ohne vorherige Bewegung eine Abschaltung folgt.
+  # "from: off" schließt Attributänderungen eines bereits brennenden Lichts aus
+  # (Helligkeit, Farbe) - sonst würde jedes Dimmen die Nachlaufzeit neu starten.
+  - trigger: state
+    id: manuell
+    entity_id: !input lichter
+    from: "off"
+    to: "on"
+
+conditions: []
+
+variables:
+  v_melder: !input bewegungsmelder
+  v_lichter: !input lichter
+  v_nachlaufzeit: !input nachlaufzeit
+  v_sicherheits_timeout: !input sicherheits_timeout
+  v_dunkel_modus: !input dunkel_modus
+  v_lux_sensoren: !input helligkeitssensoren
+  v_lux_schwelle: !input lux_schwelle
+  v_helligkeit: !input einschalt_helligkeit
+  v_uebergang: !input uebergangszeit
+  v_nachtmodus: !input nachtmodus
+  v_nacht_start: !input nacht_start
+  v_nacht_ende: !input nacht_ende
+  v_nacht_helligkeit: !input nacht_helligkeit
+  v_manueller_trigger: !input manueller_trigger
+  v_manuelles_aus: !input manuelles_aus_respektieren
+  v_sperren: !input sperr_entitaeten
+  v_sperr_verhalten: !input sperr_verhalten
+  v_max_versuche: !input max_versuche
+  v_push_geraete: !input push_geraete_fehler
+  v_push_kritisch: !input push_kritisch
+
+  # Ist der Auslöser echt? Ein "manuell"-Trigger ohne parent_id kam von Hand
+  # (Wandschalter, App, Sprache). Mit parent_id steckt eine Automation oder ein Skript
+  # dahinter - allen voran diese hier, wenn sie gerade selbst eingeschaltet hat.
+  ausloeser_gueltig: >-
+    {{ trigger.id | default('') != 'manuell'
+       or (v_manueller_trigger and trigger.to_state.context.parent_id is none) }}
+
+  # Sperre zum Startzeitpunkt. Vor dem Ausschalten wird sie erneut ausgewertet.
+  sperre_aktiv: >-
+    {{ expand(v_sperren) | selectattr('state', 'eq', 'on') | list | count > 0 }}
+
+  # Dunkel laut Sensor: der kleinste gültige Messwert entscheidet. Ohne verwertbaren
+  # Sensor gilt die Bedingung als erfüllt, damit ein fehlender Sensor nicht blockiert.
+  lux_ok: >-
+    {% set werte = expand(v_lux_sensoren) | map(attribute='state')
+                   | select('is_number') | map('float') | list %}
+    {{ werte | count == 0 or (werte | min) <= (v_lux_schwelle | float) }}
+
+  # Helligkeit für diesen Durchlauf - im Nachtfenster der zweite Wert.
+  # Das Fenster darf über Mitternacht gehen, dann kehrt sich der Vergleich um.
+  helligkeit_soll: >-
+    {% set jetzt = now().strftime('%H:%M:%S') %}
+    {% set im_fenster = (v_nacht_start <= jetzt and jetzt < v_nacht_ende)
+                        if v_nacht_start <= v_nacht_ende
+                        else (jetzt >= v_nacht_start or jetzt < v_nacht_ende) %}
+    {{ (v_nacht_helligkeit if (v_nachtmodus and im_fenster) else v_helligkeit) | int }}
+
+  # Ziele, die beim Start nicht brennen - nur die werden eingeschaltet und nur die
+  # bekommen eine Helligkeit vorgegeben. Wer von Hand gedimmt hat, wird nicht überstimmt.
+  offen_start: >-
+    {{ expand(v_lichter) | rejectattr('state', 'eq', 'on')
+       | map(attribute='entity_id') | list }}
+
+actions:
+  # 1. Auslöser prüfen: eigenes Einschalten darf den Durchlauf nicht neu starten.
+  - alias: Nur echte Auslöser verarbeiten
+    condition: template
+    value_template: "{{ ausloeser_gueltig }}"
+
+  # 2. Vollsperre?
+  - alias: Vollsperre beachten
+    condition: template
+    value_template: "{{ not (sperre_aktiv and v_sperr_verhalten == 'beides') }}"
+
+  # 3. Einschalten - nur bei Bewegung, nur wenn dunkel genug, nur was aus ist.
+  #    Die Dunkelheitsprüfung sitzt bewusst hier und nicht im "conditions"-Block:
+  #    ein Durchlauf muss auch tagsüber bis zum Ausschalten kommen, sonst bliebe
+  #    von Hand eingeschaltetes Licht am Tag ewig an.
+  - alias: Einschalten mit Bestätigung
+    choose:
+      - conditions:
+          - condition: template
+            value_template: >-
+              {{ trigger.id | default('') == 'bewegung'
+                 and offen_start | count > 0
+                 and not (sperre_aktiv
+                          and v_sperr_verhalten in ['beides', 'nur_einschalten']) }}
+          # Dunkelheit: die fünf Modi als eine ODER-Verknüpfung.
+          # 'sonne'        -> nur der Sonnen-Zweig, Lux-Klausel immer wahr
+          # 'beides_und'   -> Sonnen-Zweig zusätzlich mit lux_ok
+          # 'beides_oder'  -> Sonnen-Zweig oder Lux-Zweig
+          # 'helligkeit'   -> nur der Lux-Zweig
+          - condition: or
+            conditions:
+              - condition: template
+                value_template: "{{ v_dunkel_modus == 'immer' }}"
+              - condition: and
+                conditions:
+                  - condition: template
+                    value_template: >-
+                      {{ v_dunkel_modus in ['sonne', 'beides_und', 'beides_oder'] }}
+                  - condition: sun
+                    after: sunset
+                    after_offset: !input offset_sonnenuntergang
+                    before: sunrise
+                    before_offset: !input offset_sonnenaufgang
+                  - condition: template
+                    value_template: >-
+                      {{ v_dunkel_modus != 'beides_und' or lux_ok }}
+              - condition: and
+                conditions:
+                  - condition: template
+                    value_template: >-
+                      {{ v_dunkel_modus in ['helligkeit', 'beides_oder'] }}
+                  - condition: template
+                    value_template: "{{ lux_ok }}"
+        sequence:
+          - alias: Einschalten und nachprüfen
+            repeat:
+              sequence:
+                - variables:
+                    versuche: "{{ repeat.index }}"
+                    # Noch nicht brennende Ziele, getrennt nach "mit Helligkeit"
+                    # (nur light.*, nur wenn eine Helligkeit vorgegeben ist) und Rest.
+                    offen: >-
+                      {{ expand(v_lichter) | rejectattr('state', 'eq', 'on')
+                         | map(attribute='entity_id') | list }}
+                - variables:
+                    offen_dimmbar: >-
+                      {{ offen | select('match', 'light\.') | list
+                         if helligkeit_soll > 0 else [] }}
+                    offen_einfach: >-
+                      {{ offen | reject('match', 'light\.') | list
+                         if helligkeit_soll > 0 else offen }}
+                - if:
+                    - condition: template
+                      value_template: "{{ offen_dimmbar | count > 0 }}"
+                  then:
+                    - action: light.turn_on
+                      continue_on_error: true
+                      target:
+                        entity_id: "{{ offen_dimmbar }}"
+                      # Transition nur mitsenden, wenn eine gesetzt ist - manche
+                      # Leuchtmittel quittieren ein unbekanntes Attribut mit einem Fehler.
+                      data: >-
+                        {{ {'brightness_pct': helligkeit_soll, 'transition': v_uebergang}
+                           if v_uebergang > 0 else {'brightness_pct': helligkeit_soll} }}
+                - if:
+                    - condition: template
+                      value_template: "{{ offen_einfach | count > 0 }}"
+                  then:
+                    - action: homeassistant.turn_on
+                      continue_on_error: true
+                      target:
+                        entity_id: "{{ offen_einfach }}"
+                - delay:
+                    seconds: !input pruefung_verzoegerung
+              until:
+                - condition: template
+                  value_template: >-
+                    {{ expand(v_lichter) | rejectattr('state', 'eq', 'on') | list | count == 0
+                       or repeat.index >= v_max_versuche }}
+
+          - alias: Ergebnis des Einschaltens
+            variables:
+              phase: einschalten
+              restliche: >-
+                {{ expand(v_lichter) | rejectattr('state', 'eq', 'on')
+                   | map(attribute='entity_id') | list }}
+          - variables:
+              melde_text: >-
+                Licht ließ sich nach {{ versuche }} Versuch(en) nicht einschalten:
+                {% for e in restliche %}{{ state_attr(e, 'friendly_name') or e }}
+                ({{ states(e) }}){% if not loop.last %}, {% endif %}{% endfor %}
+              push_extra: >-
+                {{ {'push': {'sound': {'name': 'default', 'critical': 1, 'volume': 1.0}}}
+                   if v_push_kritisch else {} }}
+
+          - alias: Push bei fehlgeschlagenem Einschalten
+            repeat:
+              for_each: "{{ v_push_geraete if restliche | count > 0 else [] }}"
+              sequence:
+                # Der Notify-Dienst der Companion-App heisst notify.mobile_app_<Geraetename>.
+                # device_attr(...,'name') liefert den Namen zur Registrierungszeit - genau
+                # den, aus dem der Dienstname gebildet wurde.
+                - action: "notify.mobile_app_{{ device_attr(repeat.item, 'name') | slugify }}"
+                  continue_on_error: true
+                  data:
+                    title: !input push_titel
+                    message: "{{ melde_text }}"
+                    data: "{{ push_extra }}"
+
+          - alias: Zusatzaktion bei fehlgeschlagenem Einschalten
+            if:
+              - condition: template
+                value_template: "{{ restliche | count > 0 }}"
+            then: !input aktion_bei_fehler
+
+  # 4. Warten, bis alle Melder frei melden. wait_template wird sofort ausgewertet -
+  #    ist ohnehin schon Ruhe, geht es direkt weiter. Der Abbruch bei manuellem Aus
+  #    steht vorn im Template, damit die Lichter immer als Listener registriert werden.
+  - alias: Warten bis keine Bewegung mehr
+    wait_template: >-
+      {{ (expand(v_lichter) | selectattr('state', 'eq', 'on') | list | count == 0
+          and v_manuelles_aus)
+         or expand(v_melder) | selectattr('state', 'eq', 'on') | list | count == 0 }}
+    timeout: >-
+      {{ (v_sicherheits_timeout | int * 60) if (v_sicherheits_timeout | int) > 0 else 86400 }}
+    continue_on_timeout: true
+
+  # 5. Nachlaufzeit. Als wait_template statt delay, damit ein manuelles Ausschalten
+  #    den Durchlauf sofort beendet, statt später noch einen Befehl zu schicken.
+  - alias: Nachlaufzeit
+    wait_template: >-
+      {{ expand(v_lichter) | selectattr('state', 'eq', 'on') | list | count == 0
+         and v_manuelles_aus }}
+    timeout: "{{ v_nachlaufzeit | int }}"
+    continue_on_timeout: true
+
+  # 6. Ausschalten - nur wenn überhaupt noch etwas nicht aus ist und keine Sperre greift.
+  #    "nicht aus" statt "an": ein unavailable Aktor gilt als Abweichung und wird
+  #    angestossen, sonst bliebe ein hängendes Gerät unbemerkt an.
+  - alias: Ergebnis der Wartezeit
+    variables:
+      nicht_aus: >-
+        {{ expand(v_lichter) | rejectattr('state', 'eq', 'off')
+           | map(attribute='entity_id') | list }}
+      sperre_jetzt: >-
+        {{ expand(v_sperren) | selectattr('state', 'eq', 'on') | list | count > 0 }}
+
+  - alias: Nur ausschalten, wenn nötig und erlaubt
+    condition: template
+    value_template: >-
+      {{ nicht_aus | count > 0
+         and not (sperre_jetzt and v_sperr_verhalten in ['beides', 'nur_ausschalten']) }}
+
+  - alias: Ausschalten mit Bestätigung
+    repeat:
+      sequence:
+        - variables:
+            versuche: "{{ repeat.index }}"
+        - action: homeassistant.turn_off
+          continue_on_error: true
+          target:
+            entity_id: >-
+              {{ expand(v_lichter) | rejectattr('state', 'eq', 'off')
+                 | map(attribute='entity_id') | list }}
+        - delay:
+            seconds: !input pruefung_verzoegerung
+      until:
+        - condition: template
+          value_template: >-
+            {{ expand(v_lichter) | rejectattr('state', 'eq', 'off') | list | count == 0
+               or repeat.index >= v_max_versuche }}
+
+  - alias: Ergebnis des Ausschaltens
+    variables:
+      phase: ausschalten
+      restliche: >-
+        {{ expand(v_lichter) | rejectattr('state', 'eq', 'off')
+           | map(attribute='entity_id') | list }}
+  - variables:
+      melde_text: >-
+        Licht ließ sich nach {{ versuche }} Versuch(en) nicht ausschalten:
+        {% for e in restliche %}{{ state_attr(e, 'friendly_name') or e }}
+        ({{ states(e) }}){% if not loop.last %}, {% endif %}{% endfor %}
+      push_extra: >-
+        {{ {'push': {'sound': {'name': 'default', 'critical': 1, 'volume': 1.0}}}
+           if v_push_kritisch else {} }}
+
+  - alias: Push bei fehlgeschlagenem Ausschalten
+    repeat:
+      for_each: "{{ v_push_geraete if restliche | count > 0 else [] }}"
+      sequence:
+        - action: "notify.mobile_app_{{ device_attr(repeat.item, 'name') | slugify }}"
+          continue_on_error: true
+          data:
+            title: !input push_titel
+            message: "{{ melde_text }}"
+            data: "{{ push_extra }}"
+
+  - alias: Zusatzaktion bei fehlgeschlagenem Ausschalten
+    if:
+      - condition: template
+        value_template: "{{ restliche | count > 0 }}"
+    then: !input aktion_bei_fehler
