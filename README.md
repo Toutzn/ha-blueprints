@@ -1,18 +1,69 @@
 # Home Assistant Blueprints
 
-Eigene Automations-Blueprints für Home Assistant.
+Sammlung eigener Automations-Blueprints für [Home Assistant](https://www.home-assistant.io/).
+
+## Übersicht
+
+| Blueprint | Domain | Kurzbeschreibung | Min. HA |
+|---|---|---|---|
+| [Zeitschaltuhr mit Schaltbestätigung](#zeitschaltuhr-mit-schaltbestätigung) | `automation` | Zeitschaltuhr, die nachprüft, ob der Schaltbefehl angekommen ist | 2024.10 |
+
+## Aufbau
+
+```
+blueprints/
+├── automation/    # Automations-Blueprints
+├── script/        # Script-Blueprints
+└── template/      # Template-Blueprints
+```
+
+Das Layout spiegelt Home Assistants eigenes `/config/blueprints/`-Verzeichnis.
+
+---
+
+## Import in Home Assistant
+
+> **Wichtig:** Der Import arbeitet **pro URL, nicht pro Repository**. Eine URL = eine
+> Datei = ein Blueprint. Ein Repo mit mehreren Blueprints wird also mehrfach importiert,
+> jeweils mit der URL der betreffenden Datei. Home Assistant sieht sich das Repo
+> drumherum nicht an.
+
+**Per Knopf:** auf das Import-Badge beim jeweiligen Blueprint klicken.
+
+**Manuell:** Einstellungen → Automationen & Szenen → Tab *Blueprints* →
+*Blueprint importieren* → Blob-URL der Datei einfügen. Die gewöhnliche
+`github.com/.../blob/...`-Adresse genügt, Home Assistant rechnet sie selbst auf
+`raw.githubusercontent.com` um.
+
+### Wohin die Datei landet
+
+Home Assistant bildet den Zielordner aus dem **GitHub-Benutzernamen**, nicht aus dem
+Ordner im Repo:
+
+```
+/config/blueprints/<domain>/Toutzn/<dateiname>.yaml
+```
+
+Liegt dort bereits eine Datei gleichen Namens — etwa aus einer früheren manuellen
+Installation — bricht der Import ab. Die alte Datei vorher löschen oder umbenennen.
+
+### Updates
+
+Änderung hier committen und pushen, dann in Home Assistant beim Blueprint
+*Blueprint neu importieren*. Bestehende Automationen behalten ihre Konfiguration.
+Das funktioniert, weil jeder Blueprint seine `source_url` mitführt.
 
 ---
 
 ## Zeitschaltuhr mit Schaltbestätigung
 
-[![Blueprint importieren](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2FDEIN-GITHUB-NAME%2Fha-blueprints%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Ftorsten%2Fzeitschaltuhr_mit_bestaetigung.yaml)
+[![Blueprint importieren](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2FToutzn%2Fha-blueprints%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Fzeitschaltuhr_mit_bestaetigung.yaml)
 
-Schaltet beliebige Entitäten nach einem `schedule.*`-Helfer ein und aus – und **prüft nach,
-ob es wirklich geklappt hat**. Verlorene Funkbefehle, kurz nicht erreichbare Aktoren und
-verpasste Trigger nach einem Neustart fallen damit nicht mehr durchs Raster.
+Schaltet beliebige Entitäten nach einem `schedule.*`-Helfer ein und aus – und **prüft
+nach, ob es wirklich geklappt hat**. Verlorene Funkbefehle, kurz nicht erreichbare
+Aktoren und verpasste Trigger nach einem Neustart fallen damit nicht mehr durchs Raster.
 
-**Datei:** [`blueprints/automation/torsten/zeitschaltuhr_mit_bestaetigung.yaml`](blueprints/automation/torsten/zeitschaltuhr_mit_bestaetigung.yaml)
+**Datei:** [`blueprints/automation/zeitschaltuhr_mit_bestaetigung.yaml`](blueprints/automation/zeitschaltuhr_mit_bestaetigung.yaml)
 **Benötigt:** Home Assistant 2024.10 oder neuer
 
 ### Warum
@@ -126,23 +177,27 @@ data:
 
 ---
 
-## Import
+## Neuen Blueprint hinzufügen
 
-**Per Knopf:** auf das Badge oben klicken.
-
-**Manuell:** Einstellungen → Automationen & Szenen → Tab *Blueprints* → *Blueprint importieren*,
-dann diese URL einfügen:
-
-```
-https://github.com/DEIN-GITHUB-NAME/ha-blueprints/blob/main/blueprints/automation/torsten/zeitschaltuhr_mit_bestaetigung.yaml
-```
-
-Home Assistant legt den Blueprint danach unter
-`/config/blueprints/automation/DEIN-GITHUB-NAME/zeitschaltuhr_mit_bestaetigung.yaml` ab.
-
-> Liegt dort schon eine Datei mit diesem Namen – etwa aus einer früheren manuellen
-> Installation – schlägt der Import fehl. Die alte Datei vorher löschen oder umbenennen.
+1. Datei nach `blueprints/<domain>/<name>.yaml` legen (`domain` = `automation`, `script`
+   oder `template`).
+2. Im `blueprint:`-Block eintragen:
+   ```yaml
+   blueprint:
+     name: Sprechender Name
+     author: Torsten Wilms
+     source_url: https://github.com/Toutzn/ha-blueprints/blob/main/blueprints/<domain>/<name>.yaml
+     homeassistant:
+       min_version: "2024.10.0"
+     domain: <domain>
+   ```
+   Die `source_url` muss exakt dem Pfad im Repo entsprechen – sie ist der Update-Pfad.
+3. Zeile in die Übersichtstabelle oben aufnehmen und einen eigenen Abschnitt anlegen.
+4. Import-Badge einfügen:
+   ```markdown
+   [![Blueprint importieren](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=<URL-encodierte Blob-URL>)
+   ```
 
 ## Lizenz
 
-MIT
+MIT – siehe [LICENSE](LICENSE).
