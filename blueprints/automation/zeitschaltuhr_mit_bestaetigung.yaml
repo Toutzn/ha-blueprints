@@ -5,13 +5,19 @@ blueprint:
   homeassistant:
     min_version: "2024.10.0"
   description: >-
-    Schaltet beliebige Entitäten nach einem Schedule-Helfer ein und aus – und prüft
-    danach nach, ob es wirklich geklappt hat.
+    Schaltet beliebige Entitäten nach einer oder mehreren Zeitquellen ein und aus – und
+    prüft danach nach, ob es wirklich geklappt hat.
 
 
-    **Ablauf:** Zeitschaltuhr aktiv? → Freigaben erfüllt? → sagt der Zeitplan „an"
-    oder „aus"? → weicht der Ist-Zustand vom Soll ab? → schalten, warten,
-    nachprüfen, bei Bedarf wiederholen → Erfolg oder Fehlschlag melden.
+    **Zeitquelle** ist jede Entität mit `on`/`off`: ein `schedule.*`-Helfer, ein
+    Template-Binärsensor für Sonnenauf-/-untergang, eine Kalender-Entität. Der Blueprint
+    braucht einen abfragbaren Zustand, kein Ereignis – nur so kann er nach einem
+    Neustart nachholen, was er verpasst hat.
+
+
+    **Ablauf:** Master-Schalter an? → Zeitschaltuhr aktiv? → sagen die Zeitquellen „an"
+    oder „aus"? → weicht der Ist-Zustand vom Soll ab? → schalten, warten, nachprüfen,
+    bei Bedarf wiederholen → Erfolg oder Fehlschlag melden.
 
 
     **Selbstheilend:** Zusätzlich zu den Schaltzeitpunkten prüft die Automation
@@ -42,16 +48,53 @@ blueprint:
       icon: mdi:calendar-clock
       collapsed: false
       input:
-        zeitplan:
-          name: Zeitplan
+        zeitquellen:
+          name: Zeitquellen
           description: >-
-            Der Schedule-Helfer, der die Schaltzeiten vorgibt. `on` = Ziel-Entitäten
-            sollen an sein, `off` = aus. Wochentage und mehrere Blöcke pro Tag
-            konfigurierst du direkt im Helfer.
+            Eine oder mehrere Entitäten, deren Zustand den Soll-Zustand vorgibt:
+            `on` = Ziel-Entitäten sollen an sein, `off` = aus.
+
+
+            Üblich ist ein `schedule.*`-Helfer (Wochentage und mehrere Blöcke pro Tag
+            konfigurierst du direkt darin). Es geht aber jede Entität mit `on`/`off` –
+            etwa ein Template-Binärsensor für Sonnenauf- und -untergang oder eine
+            Kalender-Entität.
+
+
+            WICHTIG: Die Quelle muss einen abfragbaren Zustand haben, kein Ereignis.
+            `sun.sun` selbst passt NICHT (dessen Zustand ist `above_horizon` /
+            `below_horizon`), ebenso wenig `person` oder `device_tracker` (`home` /
+            `not_home`) – dafür einen Template-Binärsensor anlegen. Rezepte stehen in
+            der README.
           selector:
             entity:
+              multiple: true
               filter:
                 - domain: schedule
+                - domain: binary_sensor
+                - domain: input_boolean
+                - domain: switch
+                - domain: light
+                - domain: fan
+                - domain: calendar
+                - domain: group
+                - domain: automation
+
+        zeitquellen_verknuepfung:
+          name: Verknüpfung mehrerer Zeitquellen
+          description: >-
+            Nur relevant, wenn oben mehr als eine Quelle gewählt ist. ODER = zwei
+            Zeitfenster addieren. UND = Bedingungen kombinieren, z. B. Zeitfenster
+            zusammen mit Anwesenheit.
+          default: oder
+          selector:
+            select:
+              mode: list
+              options:
+                - label: "ODER – eine Quelle on genügt"
+                  value: oder
+                - label: "UND – alle Quellen müssen on sein"
+                  value: und
 
     schalter:
       name: Schalter und Betriebsart
@@ -91,14 +134,24 @@ blueprint:
                   value: handbetrieb
 
         aktiv_schalter:
-          name: Zeitschaltuhr aktiv
+          name: Zeitschaltuhr aktiv (optional)
           description: >-
-            Die Betriebsart. `on` = der Zeitplan regiert. `off` = es gilt das unten
-            gewählte Verhalten.
+            Die Betriebsart. Alle hier gewählten Entitäten müssen `on` sein, damit die
+            Zeitquellen regieren; sonst gilt das unten gewählte Verhalten.
+
+
+            Leer lassen, wenn es keinen Handbetrieb geben soll – dann läuft die
+            Automatik immer nach den Zeitquellen. Sinnvoll z. B. für eine reine
+            Beleuchtungsschaltung, die nie von Hand übersteuert wird.
+          default: []
           selector:
             entity:
+              multiple: true
               filter:
                 - domain: input_boolean
+                - domain: binary_sensor
+                - domain: switch
+                - domain: schedule
 
         verhalten_bei_zeitschaltuhr_aus:
           name: Verhalten bei deaktivierter Zeitschaltuhr
@@ -294,16 +347,16 @@ max: 10
 max_exceeded: silent
 
 triggers:
-  # Regulärer Schaltzeitpunkt: Zeitplan wechselt. Mit explizitem "to:", damit
+  # Regulärer Schaltzeitpunkt: eine Zeitquelle wechselt. Mit explizitem "to:", damit
   # reine Attributänderungen (z. B. next_event) die Automation nicht sinnlos starten.
   - trigger: state
-    entity_id: !input zeitplan
+    entity_id: !input zeitquellen
     to: "on"
-    id: zeitplan
+    id: zeitquelle
   - trigger: state
-    entity_id: !input zeitplan
+    entity_id: !input zeitquellen
     to: "off"
-    id: zeitplan
+    id: zeitquelle
 
   # Master oder Betriebsart geändert -> sofort neu bewerten
   - trigger: state
@@ -326,7 +379,8 @@ triggers:
 conditions: []
 
 variables:
-  v_zeitplan: !input zeitplan
+  v_quellen: !input zeitquellen
+  v_verknuepfung: !input zeitquellen_verknuepfung
   v_aktiv: !input aktiv_schalter
   v_master: !input master_entitaeten
   v_verhalten_master: !input verhalten_bei_master_aus
@@ -339,25 +393,42 @@ variables:
 
   ziel_liste: !input ziele
 
+  # Vorbedingung: haben alle Entscheidungs-Eingaben einen brauchbaren Zustand?
+  # Beim HA-Start sind Entitäten kurz "unavailable" - dann darf NICHTS geschaltet
+  # werden, sonst wird "weiß ich nicht" als "aus" missverstanden.
+  eingaben_bekannt: >-
+    {% set quellen = expand(v_quellen) | list %}
+    {% set schalter = expand(v_master) | list + expand(v_aktiv) | list %}
+    {{ quellen | count > 0
+       and quellen | rejectattr('state', 'in', ['on', 'off']) | list | count == 0
+       and schalter | rejectattr('state', 'in', ['on', 'off']) | list | count == 0 }}
+
   # Ebene 1: sind alle Master-Schalter "on"? (leere Liste = ja)
   master_ok: >-
     {{ expand(v_master) | selectattr('state', 'ne', 'on') | list | count == 0 }}
 
-  # Ebene 2: ist die Betriebsart "on"?
-  uhr_ok: "{{ is_state(v_aktiv, 'on') }}"
+  # Ebene 2: sind alle Betriebsart-Schalter "on"? (leere Liste = ja)
+  uhr_ok: >-
+    {{ expand(v_aktiv) | selectattr('state', 'ne', 'on') | list | count == 0 }}
+
+  # Ebene 3: sagen die Zeitquellen "an"? ODER = eine genügt, UND = alle müssen.
+  quelle_an: >-
+    {% set an = expand(v_quellen) | selectattr('state', 'eq', 'on') | list | count %}
+    {% set alle = expand(v_quellen) | list | count %}
+    {{ an > 0 if v_verknuepfung == 'oder' else (alle > 0 and an == alle) }}
 
   # Soll-Zustand: 'on', 'off' oder 'egal' (= Automatik ist nicht zuständig).
-  # Der Master hat Vorrang vor der Betriebsart.
+  # Unbekannte Zustände zuerst, dann Master, dann Betriebsart, dann die Zeitquellen.
   soll_zustand: >-
-    {% if not master_ok %}{{ 'off' if v_verhalten_master == 'ausschalten' else 'egal' }}{% elif not uhr_ok %}{{ 'off' if v_verhalten_uhr == 'ausschalten' else 'egal' }}{% else %}{{ 'on' if is_state(v_zeitplan, 'on') else 'off' }}{% endif %}
+    {% if not eingaben_bekannt %}egal{% elif not master_ok %}{{ 'off' if v_verhalten_master == 'ausschalten' else 'egal' }}{% elif not uhr_ok %}{{ 'off' if v_verhalten_uhr == 'ausschalten' else 'egal' }}{% else %}{{ 'on' if quelle_an else 'off' }}{% endif %}
 
   # Auslöser, maschinenlesbar
   grund: >-
-    {% if not master_ok %}master_aus{% elif not uhr_ok %}zeitschaltuhr_aus{% else %}zeitplan{% endif %}
+    {% if not eingaben_bekannt %}unbekannt{% elif not master_ok %}master_aus{% elif not uhr_ok %}zeitschaltuhr_aus{% else %}zeitquelle{% endif %}
 
   # Auslöser im Klartext, für Meldungen
   grund_text: >-
-    {% if grund == 'master_aus' %}Master-Schalter aus{% elif grund == 'zeitschaltuhr_aus' %}Zeitschaltuhr deaktiviert{% else %}Zeitplan{% endif %}
+    {% if grund == 'unbekannt' %}Zustand nicht verfügbar{% elif grund == 'master_aus' %}Master-Schalter aus{% elif grund == 'zeitschaltuhr_aus' %}Zeitschaltuhr deaktiviert{% else %}Zeitquelle{% endif %}
 
   # Ziel-Entitäten, die aktuell nicht im Soll-Zustand sind
   abweichend: >-

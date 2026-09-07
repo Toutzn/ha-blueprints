@@ -6,7 +6,7 @@ Sammlung eigener Automations-Blueprints für [Home Assistant](https://www.home-a
 
 | Blueprint | Domain | Kurzbeschreibung | Min. HA |
 |---|---|---|---|
-| [Zeitschaltuhr mit Schaltbestätigung](#zeitschaltuhr-mit-schaltbestätigung) | `automation` | Zeitschaltuhr mit Master/Betriebsart-Hierarchie, die nachprüft, ob der Schaltbefehl angekommen ist | 2024.10 |
+| [Zeitschaltuhr mit Schaltbestätigung](#zeitschaltuhr-mit-schaltbestätigung) | `automation` | Schaltet Entitäten nach frei wählbaren Zeitquellen und prüft nach, ob der Befehl angekommen ist | 2024.10 |
 
 ## Aufbau
 
@@ -59,8 +59,8 @@ Das funktioniert, weil jeder Blueprint seine `source_url` mitführt.
 
 [![Blueprint importieren](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2FToutzn%2Fha-blueprints%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Fzeitschaltuhr_mit_bestaetigung.yaml)
 
-Schaltet beliebige Entitäten nach einem `schedule.*`-Helfer ein und aus – und **prüft
-nach, ob es wirklich geklappt hat**. Verlorene Funkbefehle, kurz nicht erreichbare
+Schaltet beliebige Entitäten nach einer oder mehreren **Zeitquellen** ein und aus – und
+**prüft nach, ob es wirklich geklappt hat**. Verlorene Funkbefehle, kurz nicht erreichbare
 Aktoren und verpasste Trigger nach einem Neustart fallen damit nicht mehr durchs Raster.
 
 **Datei:** [`blueprints/automation/zeitschaltuhr_mit_bestaetigung.yaml`](blueprints/automation/zeitschaltuhr_mit_bestaetigung.yaml)
@@ -74,20 +74,45 @@ im Schaltmoment neu gestartet – bleibt die Last unbemerkt an. Dieser Blueprint
 Ist-Zustand nach dem Schalten zurück, wiederholt gezielt für die Entitäten, die nicht
 reagiert haben, und meldet erst dann Erfolg oder Fehlschlag.
 
-### Zwei Ebenen
+### Zeitquellen: Zustand, nicht Ereignis
 
-Der Blueprint kennt eine Hierarchie mit **je eigenem Verhalten**:
+Die Zeitquelle ist **jede Entität mit `on`/`off`** – ein `schedule.*`-Helfer, ein
+Template-Binärsensor, eine Kalender-Entität, eine Gruppe. Mehrere Quellen lassen sich
+per ODER (Fenster addieren) oder UND (Bedingungen kombinieren) verknüpfen.
+
+Warum ein Zustand und kein Trigger? Der Blueprint ist selbstheilend: er fragt zyklisch
+und nach jedem Neustart *„was soll jetzt gerade sein?"*. Ein `sun`-Trigger feuert im
+Moment des Sonnenuntergangs und ist dann vorbei – startet HA zwanzig Minuten später neu,
+weiß niemand mehr, dass die Last an sein sollte. Ein Zustand lässt sich jederzeit
+befragen, ein Ereignis nicht.
+
+Deshalb passen diese Entitäten **nicht** direkt als Quelle, weil ihr Zustand nicht
+`on`/`off` ist – ein Template-Binärsensor davor löst das (Rezepte unten):
+
+| Entität | Zustand |
+|---|---|
+| `sun.sun` | `above_horizon` / `below_horizon` |
+| `person.*`, `device_tracker.*` | `home` / `not_home` |
+
+### Zwei Ebenen darüber
+
+Über den Zeitquellen liegt eine Hierarchie mit **je eigenem Verhalten**, beide optional:
 
 1. **Master-Schalter** – sinnbildlich der Stecker der Zeitschaltuhr. Hat Vorrang.
-2. **Zeitschaltuhr aktiv** – die Betriebsart: regiert der Zeitplan, oder ist Handbetrieb?
+2. **Zeitschaltuhr aktiv** – die Betriebsart: regieren die Zeitquellen, oder Handbetrieb?
 
 Damit lässt sich „Stecker gezogen = Last aus" und „Betriebsart aus = Hände weg" gleichzeitig
-abbilden – zwei Anforderungen, die sich mit nur einem Schalter widersprechen würden.
+abbilden – zwei Anforderungen, die sich mit nur einem Schalter widersprechen würden. Beide
+leer lassen = die Zeitquellen regieren immer, ohne Übersteuerung.
 
 ### Ablauf
 
 ```
-Trigger (Zeitplan / Schalter / Neustart / zyklisch)
+Trigger (Zeitquelle / Schalter / Neustart / zyklisch)
+        ▼
+alle Entscheidungs-Eingaben mit brauchbarem Zustand ?
+        │                  ──nein──▶  ENDE, keine Meldung
+        ja                            (z. B. kurz nach dem HA-Start)
         ▼
 alle Master-Schalter on ?  ──nein──▶  Verhalten bei Master aus
         │                             (Zwangs-Aus oder Handbetrieb)
@@ -97,7 +122,7 @@ Zeitschaltuhr aktiv on ?   ──nein──▶  Verhalten bei Zeitschaltuhr aus
         │                             (Handbetrieb oder Zwangs-Aus)
         ja
         ▼
-Soll = Zustand des Zeitplans (on / off)
+Soll = Zeitquellen, ODER/UND-verknüpft (on / off)
         │
         └──────────┬─────────────────  Handbetrieb ▶ ENDE, keine Meldung
                    ▼
@@ -118,10 +143,11 @@ Soll = Zustand des Zeitplans (on / off)
 
 | Feld | Pflicht | Default | Beschreibung |
 |---|---|---|---|
-| **Zeitplan** | ja | – | `schedule.*`-Helfer. `on` = Ziele an, `off` = Ziele aus. Wochentage und mehrere Blöcke pro Tag konfigurierst du im Helfer selbst. |
+| **Zeitquellen** | ja | – | Eine oder mehrere Entitäten mit `on`/`off`, die den Soll-Zustand vorgeben |
+| **Verknüpfung mehrerer Zeitquellen** | nein | ODER | *ODER* = eine `on` genügt · *UND* = alle müssen `on` sein |
 | **Master-Schalter** | nein | – | Oberste Ebene, „der Stecker". Alle müssen `on` sein. Hat Vorrang vor der Betriebsart. |
 | **Verhalten bei ausgeschaltetem Master** | nein | Zwangs-Aus | *Zwangs-Aus* = Ziele werden ausgeschaltet · *Handbetrieb* = Automatik hält sich raus |
-| **Zeitschaltuhr aktiv** | ja | – | `input_boolean` als Betriebsart-Schalter |
+| **Zeitschaltuhr aktiv** | nein | – | Betriebsart-Schalter. Leer = kein Handbetrieb, Zeitquellen regieren immer. |
 | **Verhalten bei deaktivierter Zeitschaltuhr** | nein | Handbetrieb | *Handbetrieb* = aktueller Zustand bleibt, du schaltest frei · *Zwangs-Aus* = Ziele werden ausgeschaltet |
 | **Zu schaltende Entitäten** | ja | – | `switch`, `light`, `input_boolean`, `fan`, `media_player` |
 | **Wartezeit vor der Nachprüfung** | nein | 10 s | Bei Funk-Aktoren großzügiger wählen |
@@ -163,7 +189,7 @@ Telegram, was auch immer. Nutzbare Variablen:
 | Variable | Inhalt |
 |---|---|
 | `soll_zustand` | `on` oder `off` |
-| `grund` | `zeitplan`, `master_aus` oder `zeitschaltuhr_aus` |
+| `grund` | `zeitquelle`, `master_aus`, `zeitschaltuhr_aus` oder `unbekannt` |
 | `grund_text` | Dasselbe im Klartext, z. B. `Master-Schalter aus` |
 | `ziel_liste` | Alle konfigurierten Ziel-Entitäten |
 | `restliche` | Entitäten, die den Soll-Zustand **nicht** erreicht haben |
@@ -174,6 +200,44 @@ schreibt nur ins HA-Logbuch, „Anhaltende Benachrichtigung erstellen"
 (`persistent_notification.create`) nur in die Glocke der Oberfläche. Beide sind **keine**
 Push-Benachrichtigungen – dafür ist die Geräteauswahl oben da. Wer sie nicht braucht,
 kann sie löschen.
+
+### Rezepte für Zeitquellen
+
+Alles über Einstellungen → Geräte & Dienste → **Helfer** → *Template* →
+*Template-Binärsensor*. Vorher im Template-Editor unter Entwicklerwerkzeuge live testen.
+
+**Sonnenuntergang bis Sonnenaufgang, aber nur zu zivilen Zeiten** – der Klassiker für
+Außenbeleuchtung und den Weihnachtsbaum:
+
+```jinja
+{% set dunkel = state_attr('sun.sun', 'elevation') < -2 %}
+{{ dunkel and today_at('06:00') <= now() < today_at('23:00') }}
+```
+
+An von 06:00 bis Sonnenaufgang und von Sonnenuntergang bis 23:00; nach Mitternacht aus.
+Die Zeitklammer trennt Morgen und Abend – ohne sie würde der Sensor die ganze Nacht
+durchlaufen. `-2` ist der Feinregler: `0` ist der Sonnenuntergang selbst, `-6` das Ende
+der bürgerlichen Dämmerung, also merklich später.
+
+**Nur abends:**
+
+```jinja
+{% set dunkel = state_attr('sun.sun', 'elevation') < -2 %}
+{{ dunkel and today_at('12:00') <= now() < today_at('23:00') }}
+```
+
+**Anwesenheit** (als zweite Quelle mit UND zu verknüpfen):
+
+```jinja
+{{ is_state('person.torsten', 'home') or is_state('person.partner', 'home') }}
+```
+
+Diese Sensoren aktualisieren sich von allein: `elevation` ändert sich laufend, und
+Templates mit `now()` rechnet Home Assistant jede Minute neu.
+
+**Ohne Template geht auch:** zwei `schedule.*`-Helfer mit ODER für „vormittags und
+abends", oder ein `schedule.*` mit UND zu einem `binary_sensor` für „im Zeitfenster und
+nur wenn jemand da ist".
 
 ### Beispielkonfiguration: Poolsteuerung
 
@@ -193,11 +257,27 @@ Daraus ergibt sich:
 | an | aus | Handbetrieb – Zustand bleibt, freies Schalten (z. B. Pumpe für die Heizung) |
 | aus | egal | Saisonende: Pumpe wird ausgeschaltet, mit Meldung |
 
+### Beispielkonfiguration: Weihnachtsbaum draußen
+
+Kein Handbetrieb, kein Master – nur Zeitquelle und Ziel:
+
+| Feld | Wert |
+|---|---|
+| Zeitquellen | `binary_sensor.dunkel_und_zivile_zeit` (Rezept oben) |
+| Master-Schalter | *leer* |
+| Zeitschaltuhr aktiv | *leer* |
+| Zu schaltende Entitäten | `switch.tannenbaum_aussen` |
+| Push bei Fehlschlag | eigenes Handy |
+| Push bei Erfolg | *leer* – zweimal täglich eine Meldung will man nicht |
+
+Die Nachprüfung sorgt dafür, dass die Lichterkette auch nach einem WLAN-Aussetzer
+angeht, und meldet, wenn die Steckdose im Garten gar nicht mehr reagiert.
+
 ### Trigger
 
 | ID | Trigger | Zweck |
 |---|---|---|
-| `zeitplan` | `state` auf den Zeitplan, `to: "on"` / `to: "off"` | Regulärer Schaltzeitpunkt |
+| `zeitquelle` | `state` auf die Zeitquellen, `to: "on"` / `to: "off"` | Regulärer Schaltzeitpunkt |
 | `schalter` | `state` auf Master-Schalter und Betriebsart, `to: ["on", "off"]` | Sofortige Neubewertung |
 | `neustart` | `homeassistant` / `start` | Nach einem Neustart verpasste Schaltzeitpunkte nachholen |
 | `sync` | `time_pattern` | Verlorene Funkbefehle einfangen |
@@ -221,6 +301,16 @@ Daraus ergibt sich:
   Erfolgsmeldungen im Minutentakt produzieren.
 - **Master vor Betriebsart.** Ist beides aus, gilt das Master-Verhalten. „Stecker gezogen"
   schlägt „Betriebsart".
+- **Zeitquelle als Zustand, nicht als Trigger.** Nur so kann der Blueprint nach einem
+  Neustart nachholen, was er verpasst hat. Ein eingebauter Sonnen-Modus hätte die
+  Zustandsmatrix vervielfacht; delegiert an einen Template-Helfer bleibt der Blueprint
+  klein und ist gleichzeitig mächtiger.
+- **Unbekannte Zustände blockieren.** Ist eine Zeitquelle oder ein Schalter `unavailable`
+  oder `unknown`, tut die Automation nichts (`grund: unbekannt`). Ohne diese Sperre würde
+  „weiß ich nicht" als „aus" gelesen – und der `homeassistant.start`-Trigger würde die
+  Last kurz nach jedem Neustart abschalten, weil Entitäten dann noch nicht geladen sind.
+  Geprüft werden nur die Entscheidungs-Eingaben; ein `unavailable` **Ziel** bleibt ein
+  Fehlerfall und wird gemeldet.
 
 ### Bekannte Einschränkungen
 
@@ -232,6 +322,9 @@ Daraus ergibt sich:
   die Automation lief nicht. Unterscheiden lässt sich das nur über die Traces.
 - `unavailable`-Ziele gelten als Abweichung, werden bis zum Versuchslimit angestoßen und
   danach als Fehler gemeldet. Das ist beabsichtigt.
+- Nach einem HA-Neustart kann es bis zum nächsten Nachprüf-Intervall dauern, bis
+  korrigiert wird – der `homeassistant.start`-Trigger läuft ins Leere, solange die
+  Zeitquellen noch `unavailable` sind. Mit dem Default von 5 Minuten unkritisch.
 - Die Master-Schalter werden mit Default `[]` als `entity_id` in einem State-Trigger
   verwendet. Eine leere Liste registriert einfach keinen Listener. Sollte eine HA-Version das
   beim Speichern beanstanden, den betreffenden Trigger entfernen – die zyklische Nachprüfung
