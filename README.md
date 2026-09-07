@@ -6,7 +6,7 @@ Sammlung eigener Automations-Blueprints für [Home Assistant](https://www.home-a
 
 | Blueprint | Domain | Kurzbeschreibung | Min. HA |
 |---|---|---|---|
-| [Zeitschaltuhr mit Schaltbestätigung](#zeitschaltuhr-mit-schaltbestätigung) | `automation` | Schaltet Entitäten nach frei wählbaren Zeitquellen und prüft nach, ob der Befehl angekommen ist | 2024.10 |
+| [🗓️⏰ Zeitschaltuhr mit Schaltbestätigung](#zeitschaltuhr-mit-schaltbestätigung) | `automation` | Schaltet Entitäten nach frei wählbaren Zeitquellen und prüft nach, ob der Befehl angekommen ist | 2024.10 |
 
 ## Aufbau
 
@@ -65,6 +65,11 @@ Aktoren und verpasste Trigger nach einem Neustart fallen damit nicht mehr durchs
 
 **Datei:** [`blueprints/automation/zeitschaltuhr_mit_bestaetigung.yaml`](blueprints/automation/zeitschaltuhr_mit_bestaetigung.yaml)
 **Benötigt:** Home Assistant 2024.10 oder neuer
+
+> **Icon für die Automation:** Der Blueprint-Name kann nur Text und Emoji enthalten – der
+> `blueprint:`-Block hat kein Icon-Feld. Ein echtes mdi-Icon lässt sich aber auf der
+> erzeugten Automation setzen: Einstellungen → Geräte & Dienste → Tab *Entitäten* → die
+> `automation.*` anklicken → Zahnrad → *Symbol* → z. B. `mdi:calendar-clock`.
 
 ### Warum
 
