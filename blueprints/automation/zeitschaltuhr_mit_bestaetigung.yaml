@@ -26,6 +26,11 @@ blueprint:
     Zwangs-Aus, Betriebsart aus = Handbetrieb.
 
 
+    **Meldungen:** Für Push aufs Handy genügt es, die Geräte auszuwählen – getrennt
+    für Erfolg und Fehlschlag. Zusätzlich lassen sich beliebige eigene Aktionen für
+    beide Fälle hinterlegen.
+
+
     **Wichtig zur Nachprüfung:** Solange die Zeitschaltuhr aktiv ist, setzt die
     zyklische Nachprüfung den Soll-Zustand auch gegen manuelles Schalten durch.
     Für Handbetrieb die Betriebsart ausschalten – oder die Nachprüfung deaktivieren.
@@ -187,6 +192,55 @@ blueprint:
                 - label: Alle 30 Minuten
                   value: "/30"
 
+    push:
+      name: Push-Benachrichtigungen
+      icon: mdi:cellphone-message
+      collapsed: false
+      input:
+        push_geraete_erfolg:
+          name: Push bei Erfolg an diese Geräte (optional)
+          description: >-
+            Geräte mit installierter Home-Assistant-App, die eine Push-Benachrichtigung
+            erhalten, wenn erfolgreich geschaltet wurde. Leer lassen = kein Push bei
+            Erfolg.
+          default: []
+          selector:
+            device:
+              integration: mobile_app
+              multiple: true
+
+        push_geraete_fehler:
+          name: Push bei Fehlschlag an diese Geräte (optional)
+          description: >-
+            Geräte, die eine Push-Benachrichtigung erhalten, wenn der Schaltbefehl auch
+            nach allen Versuchen nicht angekommen ist. Leer lassen = kein Push bei
+            Fehlschlag.
+          default: []
+          selector:
+            device:
+              integration: mobile_app
+              multiple: true
+
+        push_titel:
+          name: Titel der Push-Benachrichtigung
+          description: >-
+            Erscheint als Überschrift der Meldung. Bei mehreren Automationen aus diesem
+            Blueprint hilft ein sprechender Titel beim Auseinanderhalten, z. B. „Pool".
+          default: Zeitschaltuhr
+          selector:
+            text:
+
+        push_kritisch:
+          name: Fehlschlag als kritische Benachrichtigung
+          description: >-
+            Lässt den Fehler-Push auch bei stummgeschaltetem oder auf „Nicht stören"
+            gestelltem Telefon durch. Setzt voraus, dass in der Companion-App die
+            Berechtigung für kritische Hinweise erteilt ist. Gilt nur für den
+            Fehlschlag, nie für den Erfolg.
+          default: false
+          selector:
+            boolean:
+
     meldungen:
       name: Meldungen
       icon: mdi:bell-outline
@@ -195,15 +249,10 @@ blueprint:
         aktion_bei_erfolg:
           name: Aktion bei Erfolg
           description: >-
-            Läuft nur, wenn tatsächlich geschaltet wurde und alle Ziel-Entitäten den
-            Soll-Zustand erreicht haben.
-
-
-            ACHTUNG: Die vorgegebene Aktion „Aktivität protokollieren" (`logbook.log`)
-            ist nur ein Platzhalter und schreibt lediglich ins HA-Logbuch. Für einen
-            Push aufs Handy diesen Platzhalter LÖSCHEN und stattdessen die Aktion
-            „Benachrichtigung senden" für dein Gerät hinzufügen. Das Feld „Entitäts-ID"
-            des Platzhalters ist kein Empfänger.
+            Zusätzliche Aktion über den Push oben hinaus – läuft nur, wenn tatsächlich
+            geschaltet wurde und alle Ziel-Entitäten den Soll-Zustand erreicht haben.
+            Die vorgegebene Aktion schreibt lediglich ins HA-Logbuch; wer sie nicht
+            braucht, kann sie löschen.
 
 
             Nutzbare Variablen: `soll_zustand` (`on`/`off`), `grund_text` (Auslöser im
@@ -221,16 +270,9 @@ blueprint:
         aktion_bei_fehler:
           name: Aktion bei Fehlschlag
           description: >-
-            Läuft, wenn nach allen Versuchen noch Entitäten den Soll-Zustand nicht
-            erreicht haben.
-
-
-            ACHTUNG: Die vorgegebene Aktion „Anhaltende Benachrichtigung erstellen"
-            (`persistent_notification.create`) ist nur ein Platzhalter und erzeugt
-            lediglich die Glocken-Meldung in der HA-Oberfläche — sie hat kein
-            Geräte-Feld. Für einen Push aufs Handy diesen Platzhalter LÖSCHEN und
-            stattdessen die Aktion „Benachrichtigung senden" für dein Gerät hinzufügen.
-            Dieses Feld erbt nichts von der Erfolgs-Aktion.
+            Zusätzliche Aktion über den Push oben hinaus – läuft, wenn nach allen
+            Versuchen noch Entitäten den Soll-Zustand nicht erreicht haben. Die
+            vorgegebene Aktion erzeugt die Glocken-Meldung in der HA-Oberfläche.
 
 
             Nutzbare Variablen: `soll_zustand`, `grund_text`, `restliche` (Entitäten,
@@ -291,6 +333,9 @@ variables:
   v_verhalten_uhr: !input verhalten_bei_zeitschaltuhr_aus
   v_nachpruefung: !input nachpruefung
   v_max_versuche: !input max_versuche
+  v_push_erfolg: !input push_geraete_erfolg
+  v_push_fehler: !input push_geraete_fehler
+  v_push_kritisch: !input push_kritisch
 
   ziel_liste: !input ziele
 
@@ -368,10 +413,37 @@ actions:
         {{ expand(ziel_liste)
            | selectattr('state', 'ne', soll_zustand)
            | map(attribute='entity_id') | list }}
+      erfolg: >-
+        {{ expand(ziel_liste)
+           | selectattr('state', 'ne', soll_zustand) | list | count == 0 }}
 
-  - alias: Erfolg oder Fehlschlag melden
+  # 6. Push an die ausgewählten Geräte. Leere Liste = keine Runde, kein Versand.
+  - variables:
+      push_ziele: "{{ v_push_erfolg if erfolg else v_push_fehler }}"
+      push_text: >-
+        {% if erfolg %}{{ grund_text }}: auf '{{ soll_zustand }}' geschaltet ({{ versuche }} Versuch(e)){% else %}{{ grund_text }}: konnte nach {{ versuche }} Versuch(en) nicht auf '{{ soll_zustand }}' schalten – {{ restliche | join(', ') }}{% endif %}
+      push_extra: >-
+        {{ {'push': {'sound': {'name': 'default', 'critical': 1, 'volume': 1.0}}}
+           if (not erfolg and v_push_kritisch) else {} }}
+
+  - alias: Push-Benachrichtigung senden
+    repeat:
+      for_each: "{{ push_ziele }}"
+      sequence:
+        # Der Notify-Dienst der Companion-App heisst notify.mobile_app_<Geraetename>.
+        # device_attr(...,'name') liefert den Namen bei der Registrierung - genau den,
+        # aus dem der Dienstname gebildet wurde (nicht die spaetere Umbenennung).
+        - action: "notify.mobile_app_{{ device_attr(repeat.item, 'name') | slugify }}"
+          continue_on_error: true
+          data:
+            title: !input push_titel
+            message: "{{ push_text }}"
+            data: "{{ push_extra }}"
+
+  # 7. Zusaetzliche frei definierte Aktionen
+  - alias: Zusatzaktion bei Erfolg oder Fehlschlag
     if:
       - condition: template
-        value_template: "{{ restliche | count == 0 }}"
+        value_template: "{{ erfolg }}"
     then: !input aktion_bei_erfolg
     else: !input aktion_bei_fehler

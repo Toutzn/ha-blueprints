@@ -128,10 +128,37 @@ Soll = Zustand des Zeitplans (on / off)
 | **Maximale Schaltversuche** | nein | 5 | Wiederholt nur für die Entitäten, die noch nicht reagiert haben |
 | **Zyklische Nachprüfung aktiv** | nein | ein | Korrigiert Abweichungen laufend |
 | **Intervall der Nachprüfung** | nein | 5 min | `/1`, `/5`, `/15` oder `/30` |
-| **Aktion bei Erfolg** | nein | Logbuch-Eintrag | Frei definierbar |
-| **Aktion bei Fehlschlag** | nein | Persistente Benachrichtigung | Frei definierbar |
+| **Push bei Erfolg an diese Geräte** | nein | – | Geräte mit HA-App, die bei erfolgreichem Schalten einen Push erhalten. Leer = kein Push. |
+| **Push bei Fehlschlag an diese Geräte** | nein | – | Dasselbe für den Fehlerfall. Leer = kein Push. |
+| **Titel der Push-Benachrichtigung** | nein | `Zeitschaltuhr` | Überschrift der Meldung |
+| **Fehlschlag als kritische Benachrichtigung** | nein | aus | Push kommt auch bei stummem Telefon durch |
+| **Aktion bei Erfolg** | nein | Logbuch-Eintrag | Zusätzliche Aktion über den Push hinaus |
+| **Aktion bei Fehlschlag** | nein | Persistente Benachrichtigung | Zusätzliche Aktion über den Push hinaus |
 
-### Variablen für eigene Meldungsaktionen
+### Push aufs Handy
+
+Dafür genügt es, unter *Push-Benachrichtigungen* die Geräte auszuwählen – getrennt für
+Erfolg und Fehlschlag. Der Blueprint baut den Notify-Aufruf selbst:
+
+```yaml
+action: "notify.mobile_app_{{ device_attr(repeat.item, 'name') | slugify }}"
+```
+
+Auswählbar sind alle Geräte mit installierter Home-Assistant-App. Leere Liste = kein
+Push für diesen Fall; beide Listen leer = der Blueprint arbeitet ganz ohne Push.
+
+> **Der Dienstname hängt am Gerätenamen zur Registrierungszeit.** Die Companion-App legt
+> `notify.mobile_app_<slug des Gerätenamens>` an. `device_attr(…, 'name')` liefert genau
+> diesen ursprünglichen Namen, eine spätere Umbenennung in HA ändert daran nichts. Wird
+> die App aber deinstalliert und neu registriert, kann sich der Dienstname ändern – dann
+> das Gerät hier neu auswählen. Falls ein Push ausbleibt, den Dienstnamen unter
+> Entwicklerwerkzeuge → Aktionen gegenprüfen.
+
+### Zusätzliche Aktionen
+
+Die beiden Felder *Aktion bei Erfolg* und *Aktion bei Fehlschlag* laufen **zusätzlich**
+zum Push und nehmen beliebige Aktionen auf – Logbuch, TTS-Ansage, ein zweiter Schalter,
+Telegram, was auch immer. Nutzbare Variablen:
 
 | Variable | Inhalt |
 |---|---|
@@ -142,43 +169,11 @@ Soll = Zustand des Zeitplans (on / off)
 | `restliche` | Entitäten, die den Soll-Zustand **nicht** erreicht haben |
 | `versuche` | Anzahl der Schaltversuche |
 
-> **Die Standard-Aktionen sind Platzhalter, keine Benachrichtigungen.**
-> „Aktivität protokollieren" (`logbook.log`) schreibt nur ins HA-Logbuch, „Anhaltende
-> Benachrichtigung erstellen" (`persistent_notification.create`) nur in die Glocke der
-> HA-Oberfläche. Für einen Push aufs Handy muss der Platzhalter **gelöscht** und durch
-> die Aktion „Benachrichtigung senden" ersetzt werden. Das Feld „Entitäts-ID" des
-> Logbuch-Platzhalters ist **kein** Empfänger – es verlinkt den Logbuch-Eintrag nur auf
-> eine Entität.
->
-> **Und beide Felder sind unabhängig:** die Fehler-Aktion erbt nichts von der
-> Erfolgs-Aktion. Trag in beide ein, was du wirklich willst – der Fehlschlag ist die
-> Meldung, die dich erreichen muss.
-
-Beispiel für einen Push aufs Handy als Erfolgs-Aktion:
-
-```yaml
-action: notify.mobile_app_dein_handy
-data:
-  message: "{{ grund_text }}: auf '{{ soll_zustand }}' geschaltet."
-```
-
-Und als Fehler-Aktion, als kritische Benachrichtigung, die auch bei stummem iPhone
-durchkommt:
-
-```yaml
-action: notify.mobile_app_dein_handy
-data:
-  title: Schaltfehler
-  message: >-
-    {{ grund_text }}: konnte nach {{ versuche }} Versuch(en) nicht auf
-    '{{ soll_zustand }}' schalten – {{ restliche | join(', ') }}
-  data:
-    push:
-      sound:
-        name: default
-        critical: 1
-        volume: 1.0
-```
+Die vorgegebenen Aktionen sind Platzhalter: „Aktivität protokollieren" (`logbook.log`)
+schreibt nur ins HA-Logbuch, „Anhaltende Benachrichtigung erstellen"
+(`persistent_notification.create`) nur in die Glocke der Oberfläche. Beide sind **keine**
+Push-Benachrichtigungen – dafür ist die Geräteauswahl oben da. Wer sie nicht braucht,
+kann sie löschen.
 
 ### Beispielkonfiguration: Poolsteuerung
 
@@ -188,6 +183,7 @@ Zwei Helfer, klar getrennte Bedeutung:
 |---|---|---|
 | `input_boolean.pool_periode` | Poolsaison – „Zeitschaltuhr eingesteckt" | Master-Schalter, Verhalten **Zwangs-Aus** |
 | `input_boolean.pool_zeitschaltplan` | Betriebsart – Zeitplan oder Handbetrieb | Zeitschaltuhr aktiv, Verhalten **Handbetrieb** |
+| iPhone | Meldungen | Push bei Erfolg **und** bei Fehlschlag, Titel „Pool", Fehler kritisch |
 
 Daraus ergibt sich:
 
