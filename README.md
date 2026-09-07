@@ -142,10 +142,17 @@ Soll = Zustand des Zeitplans (on / off)
 | `restliche` | Entitäten, die den Soll-Zustand **nicht** erreicht haben |
 | `versuche` | Anzahl der Schaltversuche |
 
-> **Die beiden Meldungsfelder sind unabhängig.** Die Fehler-Aktion erbt nichts von der
-> Erfolgs-Aktion. Lässt du sie auf dem Standard, bekommst du im Fehlerfall nur eine
-> persistente Benachrichtigung in der HA-Oberfläche – keinen Push. Trag in beide Felder
-> ein, was du wirklich willst.
+> **Die Standard-Aktionen sind Platzhalter, keine Benachrichtigungen.**
+> „Aktivität protokollieren" (`logbook.log`) schreibt nur ins HA-Logbuch, „Anhaltende
+> Benachrichtigung erstellen" (`persistent_notification.create`) nur in die Glocke der
+> HA-Oberfläche. Für einen Push aufs Handy muss der Platzhalter **gelöscht** und durch
+> die Aktion „Benachrichtigung senden" ersetzt werden. Das Feld „Entitäts-ID" des
+> Logbuch-Platzhalters ist **kein** Empfänger – es verlinkt den Logbuch-Eintrag nur auf
+> eine Entität.
+>
+> **Und beide Felder sind unabhängig:** die Fehler-Aktion erbt nichts von der
+> Erfolgs-Aktion. Trag in beide ein, was du wirklich willst – der Fehlschlag ist die
+> Meldung, die dich erreichen muss.
 
 Beispiel für einen Push aufs Handy als Erfolgs-Aktion:
 

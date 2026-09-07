@@ -196,9 +196,18 @@ blueprint:
           name: Aktion bei Erfolg
           description: >-
             Läuft nur, wenn tatsächlich geschaltet wurde und alle Ziel-Entitäten den
-            Soll-Zustand erreicht haben. Nutzbare Variablen: `soll_zustand`
-            (`on`/`off`), `grund_text` (Auslöser im Klartext), `ziel_liste` (alle Ziele),
-            `versuche` (Anzahl Schaltversuche).
+            Soll-Zustand erreicht haben.
+
+
+            ACHTUNG: Die vorgegebene Aktion „Aktivität protokollieren" (`logbook.log`)
+            ist nur ein Platzhalter und schreibt lediglich ins HA-Logbuch. Für einen
+            Push aufs Handy diesen Platzhalter LÖSCHEN und stattdessen die Aktion
+            „Benachrichtigung senden" für dein Gerät hinzufügen. Das Feld „Entitäts-ID"
+            des Platzhalters ist kein Empfänger.
+
+
+            Nutzbare Variablen: `soll_zustand` (`on`/`off`), `grund_text` (Auslöser im
+            Klartext), `ziel_liste` (alle Ziele), `versuche` (Anzahl Schaltversuche).
           default:
             - action: logbook.log
               data:
@@ -213,8 +222,19 @@ blueprint:
           name: Aktion bei Fehlschlag
           description: >-
             Läuft, wenn nach allen Versuchen noch Entitäten den Soll-Zustand nicht
-            erreicht haben. Nutzbare Variablen: `soll_zustand`, `grund_text`,
-            `restliche` (Entitäten, die nicht reagiert haben), `versuche`.
+            erreicht haben.
+
+
+            ACHTUNG: Die vorgegebene Aktion „Anhaltende Benachrichtigung erstellen"
+            (`persistent_notification.create`) ist nur ein Platzhalter und erzeugt
+            lediglich die Glocken-Meldung in der HA-Oberfläche — sie hat kein
+            Geräte-Feld. Für einen Push aufs Handy diesen Platzhalter LÖSCHEN und
+            stattdessen die Aktion „Benachrichtigung senden" für dein Gerät hinzufügen.
+            Dieses Feld erbt nichts von der Erfolgs-Aktion.
+
+
+            Nutzbare Variablen: `soll_zustand`, `grund_text`, `restliche` (Entitäten,
+            die nicht reagiert haben), `versuche`.
           default:
             - action: persistent_notification.create
               data:
