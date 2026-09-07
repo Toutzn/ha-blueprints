@@ -1,0 +1,703 @@
+blueprint:
+  name: 🔌📉 Standby-Abschaltung mit Betriebserkennung
+  author: Torsten Wilms
+  source_url: https://github.com/Toutzn/ha-blueprints/blob/main/blueprints/automation/standby_abschaltung.yaml
+  homeassistant:
+    min_version: "2024.10.0"
+  description: >-
+    Schaltet einen Verbraucher stromlos, wenn seine Leistungsaufnahme lange genug im
+    Standby-Bereich liegt – Waschmaschine fertig, Trockner fertig, Fernseher aus.
+
+
+    **Kriterium** ist nicht ein einzelner Messwert, sondern ein durchgehaltenes
+    Zeitfenster: „Leistung liegt seit 20 Minuten unter 10 W". Steigt die Leistung im
+    Fenster wieder an, beginnt es von vorn – das Gerät arbeitet ja noch.
+
+
+    **Spitzen-Toleranz** für Geräte mit Nachlauf: Ein Trockner mit Knitterschutz lässt
+    die Trommel alle paar Minuten kurz anlaufen. Überschreitungen bis zu einer
+    einstellbaren Dauer gelten dann als Nachlauf und unterbrechen das Fenster nicht.
+    Ein echter Programmstart dauert länger und bricht ab.
+
+
+    **Betriebserkennung (optional):** Mit einer Startschwelle schaltet die Automation
+    erst ab, nachdem die Leistung mindestens einmal über dieser Schwelle lag. Damit
+    wird eine eingeschaltete, aber noch nicht gestartete Maschine nicht sofort wieder
+    stromlos gemacht. Ohne Startschwelle genügt „Schalter an und Leistung niedrig".
+
+
+    **Nach dem Abschalten** prüft der Blueprint nach, ob der Aktor wirklich aus ist,
+    wiederholt bei Bedarf und meldet einen endgültigen Fehlschlag – ein verlorener
+    Funkbefehl fällt nicht durchs Raster.
+
+
+    **Meldungen:** Für Push aufs Handy genügt es, die Geräte auszuwählen – getrennt
+    für Erfolg und Fehlschlag. Der Text ist frei, zusätzlich lassen sich eigene
+    Aktionen hinterlegen.
+
+
+    **Sperren:** Beliebige Entitäten können das Abschalten blockieren, und eine
+    Mindest-Einschaltdauer verhindert, dass direkt nach dem Einschalten abgeschaltet
+    wird.
+
+
+    **Ein Blueprint pro Verbraucher** – Schwellen und Nachlaufverhalten unterscheiden
+    sich je Gerät, und der Leistungssensor gehört immer zu genau einer Last.
+  domain: automation
+
+  input:
+    messung:
+      name: Leistungsmessung
+      icon: mdi:flash
+      collapsed: false
+      input:
+        leistungssensor:
+          name: Leistungssensor
+          description: >-
+            Der Sensor, der die aktuelle Leistungsaufnahme des Verbrauchers in Watt
+            liefert – bei einer schaltbaren Messsteckdose der zugehörige
+            `sensor.*_power`.
+
+
+            WICHTIG: Es muss die **momentane Leistung** sein (`device_class: power`),
+            nicht der Energiezähler in kWh (`device_class: energy`). Der Energiezähler
+            steigt nur, er fällt nie unter eine Schwelle.
+          selector:
+            entity:
+              filter:
+                - domain: sensor
+                  device_class: power
+
+        standby_schwelle:
+          name: Standby-Schwelle (W)
+          description: >-
+            Unterhalb dieser Leistung gilt der Verbraucher als nicht arbeitend.
+
+
+            Die Schwelle muss über der reinen Standby-Aufnahme liegen und unter der
+            niedrigsten Leistung, die im Betrieb dauerhaft vorkommt. Faustwerte:
+            Waschmaschine und Geschirrspüler 5–10 W, Fernseher 15–20 W,
+            Kaffeevollautomat 10 W.
+
+
+            Bei Geräten mit Nachlauf (Trockner mit Knitterschutz) gibt es zwei Wege:
+            entweder die Schwelle **über** die Nachlaufspitze legen (z. B. 300 W, wenn
+            die Trommel allein 150 W zieht und das Programm über 1 kW) – oder die
+            Schwelle niedrig lassen und unten die Spitzen-Toleranz nutzen.
+          default: 10
+          selector:
+            number:
+              min: 0.5
+              max: 3000
+              step: 0.5
+              unit_of_measurement: W
+              mode: box
+
+        standby_dauer:
+          name: Beobachtungsdauer (Minuten)
+          description: >-
+            So lange muss die Leistung ununterbrochen unter der Schwelle liegen, bevor
+            abgeschaltet wird.
+
+
+            Der Wert muss länger sein als die längste Pause, die das Gerät im laufenden
+            Betrieb macht. Waschmaschine: die Trommel steht zwischen den Waschgängen
+            mehrere Minuten – 20 Minuten sind erprobt. Bei Geschirrspülern mit langer
+            Trocknungsphase entsprechend mehr.
+          default: 20
+          selector:
+            number:
+              min: 1
+              max: 240
+              step: 1
+              unit_of_measurement: min
+              mode: box
+
+        spitzen_toleranz:
+          name: Spitzen-Toleranz (Sekunden)
+          description: >-
+            Maximale Dauer einer **einzelnen** Überschreitung der Standby-Schwelle, die
+            als Nachlauf gewertet wird und das Beobachtungsfenster weiterlaufen lässt.
+
+
+            `0` = strikt: jede Überschreitung startet das Fenster neu. Für einen
+            Trockner mit Knitterschutz (Trommel läuft 20–60 s an) passen 90–120 s.
+            Länger als die kürzeste echte Betriebsphase darf der Wert nicht sein, sonst
+            wird ein Programmstart als Nachlauf verkannt.
+
+
+            Das Fenster wird durch eine tolerierte Spitze **nicht** verlängert.
+          default: 0
+          selector:
+            number:
+              min: 0
+              max: 900
+              step: 5
+              unit_of_measurement: s
+              mode: box
+
+    zyklus:
+      name: Betriebserkennung
+      icon: mdi:washing-machine
+      collapsed: false
+      input:
+        start_schwelle:
+          name: Startschwelle (W)
+          description: >-
+            `0` = Betriebserkennung aus. Dann genügt „Verbraucher eingeschaltet und
+            Leistung unter der Standby-Schwelle" zum Abschalten – auch wenn das Gerät
+            nie gelaufen ist.
+
+
+            Ein Wert größer 0 aktiviert die Erkennung: Es wird erst abgeschaltet,
+            nachdem die Leistung mindestens einmal über dieser Schwelle lag. Sinnvoll
+            für Geräte, die vor dem Start längere Zeit nur eingeschaltet dastehen
+            (Waschmaschine mit Startzeitvorwahl, Geschirrspüler beim Beladen).
+            Faustwert: die Hälfte der Leistung, die das Gerät in seiner Heizphase zieht,
+            aber deutlich über der Standby-Schwelle – z. B. 50 W.
+
+
+            Technischer Hinweis: Die Erkennung lebt im laufenden Automations-Durchlauf,
+            nicht in einem Helfer. Ein Home-Assistant-Neustart mitten im Programm ist
+            unkritisch (die zyklische Nachprüfung setzt neu auf, solange das Gerät noch
+            über der Startschwelle zieht). Fällt Home Assistant hingegen genau in der
+            Nachlaufphase aus, bleibt der Verbraucher an – siehe README.
+          default: 0
+          selector:
+            number:
+              min: 0
+              max: 5000
+              step: 1
+              unit_of_measurement: W
+              mode: box
+
+    lasten:
+      name: Zu schaltende Entitäten
+      icon: mdi:power-socket-de
+      collapsed: false
+      input:
+        ziele:
+          name: Ziel-Entitäten
+          description: >-
+            Was abgeschaltet wird – üblicherweise die Messsteckdose, an der auch der
+            Leistungssensor hängt.
+
+
+            WICHTIG: Entitäten auswählen, keine Geräte. Nur mit einer Entity-ID kann der
+            Blueprint zurücklesen, ob das Abschalten geklappt hat.
+          selector:
+            entity:
+              multiple: true
+              filter:
+                - domain: switch
+                - domain: light
+                - domain: input_boolean
+                - domain: fan
+                - domain: media_player
+
+        bezeichnung:
+          name: Bezeichnung des Verbrauchers
+          description: >-
+            Wird in den Meldungstexten und im Logbuch verwendet. In eigenen Texten als
+            Variable `bezeichnung` verfügbar.
+          default: Der Verbraucher
+          selector:
+            text: {}
+
+    sperren:
+      name: Sperren
+      icon: mdi:hand-back-left
+      collapsed: true
+      input:
+        sperr_entitaeten:
+          name: Sperr-Entitäten (optional)
+          description: >-
+            Solange eine dieser Entitäten `on` ist, wird nicht abgeschaltet – z. B. ein
+            `input_boolean.waschmaschine_nicht_abschalten` für ein Langprogramm oder ein
+            Anwesenheits-Binärsensor.
+
+
+            Die Sperre wird zweimal geprüft: beim Start des Beobachtungsfensters und
+            direkt vor dem Abschalten. Wird sie während des Fensters gesetzt, greift sie
+            also noch.
+          default: []
+          selector:
+            entity:
+              multiple: true
+              filter:
+                - domain: input_boolean
+                - domain: binary_sensor
+                - domain: switch
+                - domain: schedule
+                - domain: person
+                - domain: group
+
+        min_einschaltdauer:
+          name: Mindest-Einschaltdauer (Minuten)
+          description: >-
+            Erst abschalten, wenn die Ziel-Entität mindestens so lange eingeschaltet
+            ist. `0` = keine Mindestdauer.
+
+
+            Schutz gegen den Fall, dass jemand die Steckdose einschaltet und die
+            Automation kurz darauf zuschlägt, weil das Gerät noch nichts tut. Wird
+            zusätzlich zur Beobachtungsdauer gerechnet und erst am Ende geprüft.
+          default: 0
+          selector:
+            number:
+              min: 0
+              max: 1440
+              step: 1
+              unit_of_measurement: min
+              mode: box
+
+    pruefung:
+      name: Abschalten und Nachprüfung
+      icon: mdi:check-decagram-outline
+      collapsed: true
+      input:
+        pruefung_verzoegerung:
+          name: Wartezeit vor der Prüfung (Sekunden)
+          description: >-
+            Zeit zwischen Schaltbefehl und Kontrolle des Ist-Zustands. Zigbee und
+            Z-Wave melden meist in 1–3 s zurück, Cloud-Steckdosen brauchen länger.
+          default: 10
+          selector:
+            number:
+              min: 1
+              max: 120
+              step: 1
+              unit_of_measurement: s
+              mode: slider
+
+        max_versuche:
+          name: Maximale Schaltversuche
+          description: >-
+            Wie oft der Abschaltbefehl wiederholt wird, solange noch etwas an ist.
+            Danach gilt der Vorgang als fehlgeschlagen.
+          default: 5
+          selector:
+            number:
+              min: 1
+              max: 20
+              step: 1
+              mode: slider
+
+        selbstheilung:
+          name: Zyklische Nachprüfung
+          description: >-
+            Prüft regelmäßig und nach jedem Home-Assistant-Neustart, ob ein Verbraucher
+            im Standby vergessen wurde – etwa weil der auslösende Messwert genau in
+            einen Neustart oder Reload fiel. Ohne diese Nachprüfung reagiert die
+            Automation nur auf den Moment, in dem die Leistung unter die Schwelle fällt.
+          default: true
+          selector:
+            boolean: {}
+
+        sync_intervall:
+          name: Intervall der Nachprüfung
+          description: >-
+            Wie oft nachgesehen wird. Häufiger als nötig bringt nichts – ein Verbraucher
+            im Standby läuft nicht davon.
+          default: "/5"
+          selector:
+            select:
+              mode: dropdown
+              options:
+                - label: jede Minute
+                  value: "/1"
+                - label: alle 5 Minuten
+                  value: "/5"
+                - label: alle 15 Minuten
+                  value: "/15"
+                - label: alle 30 Minuten
+                  value: "/30"
+
+    meldungen:
+      name: Meldungen
+      icon: mdi:bell-outline
+      collapsed: true
+      input:
+        push_geraete_erfolg:
+          name: Push bei Erfolg
+          description: >-
+            Handys und Tablets, die eine Meldung bekommen, wenn abgeschaltet wurde.
+            Leer lassen = kein Push. Voraussetzung ist die Home-Assistant-Companion-App
+            auf dem Gerät.
+          default: []
+          selector:
+            device:
+              multiple: true
+              filter:
+                - integration: mobile_app
+
+        push_geraete_fehler:
+          name: Push bei Fehlschlag
+          description: >-
+            Dieselbe Auswahl für den Fall, dass der Verbraucher nach allen Versuchen
+            nicht ausgeschaltet ist.
+          default: []
+          selector:
+            device:
+              multiple: true
+              filter:
+                - integration: mobile_app
+
+        push_titel:
+          name: Titel der Push-Meldung
+          default: "Hinweis"
+          selector:
+            text: {}
+
+        push_text_erfolg:
+          name: Text bei Erfolg
+          description: >-
+            Templates sind erlaubt. Verfügbare Variablen: `bezeichnung`, `leistung`
+            (Messwert beim Abschalten), `versuche`, `ziel_liste`.
+          default: "{{ bezeichnung }} ist fertig und wurde abgeschaltet."
+          selector:
+            text:
+              multiline: true
+
+        push_text_fehler:
+          name: Text bei Fehlschlag
+          description: >-
+            Templates sind erlaubt. Zusätzlich verfügbar: `restliche` – die Entitäten,
+            die nicht ausgegangen sind.
+          default: >-
+            {{ bezeichnung }}: Abschalten hat nach {{ versuche }} Versuch(en) nicht
+            funktioniert ({{ restliche | join(', ') }}).
+          selector:
+            text:
+              multiline: true
+
+        push_kritisch:
+          name: Fehler-Push als kritischer Alarm
+          description: >-
+            Nur iOS: Die Fehlermeldung durchbricht Stummschaltung und „Nicht stören".
+            Der Erfolgs-Push bleibt immer eine normale Benachrichtigung.
+          default: false
+          selector:
+            boolean: {}
+
+        aktion_bei_erfolg:
+          name: Aktion bei Erfolg
+          description: >-
+            Zusätzliche Aktion über den Push hinaus – läuft, wenn alle Ziel-Entitäten
+            aus sind. Die vorgegebene Aktion schreibt nur ins HA-Logbuch; wer sie nicht
+            braucht, kann sie löschen.
+
+
+            Nutzbare Variablen: `bezeichnung`, `leistung`, `versuche`, `ziel_liste`.
+          default:
+            - action: logbook.log
+              data:
+                name: Standby-Abschaltung
+                message: >-
+                  {{ bezeichnung }}: bei {{ leistung }} W abgeschaltet
+                  ({{ versuche }} Versuch(e)) – {{ ziel_liste | join(', ') }}
+          selector:
+            action: {}
+
+        aktion_bei_fehler:
+          name: Aktion bei Fehlschlag
+          description: >-
+            Zusätzliche Aktion über den Push hinaus – läuft, wenn nach allen Versuchen
+            noch etwas an ist. Die vorgegebene Aktion erzeugt die Glocken-Meldung in der
+            HA-Oberfläche.
+
+
+            Nutzbare Variablen: `bezeichnung`, `restliche`, `versuche`, `leistung`.
+          default:
+            - action: persistent_notification.create
+              data:
+                title: Standby-Abschaltung – Schaltfehler
+                message: >-
+                  {{ bezeichnung }}: konnte nach {{ versuche }} Versuch(en) nicht
+                  abgeschaltet werden – {{ restliche | join(', ') }}
+          selector:
+            action: {}
+
+# ---------------------------------------------------------------------------
+
+# Ein Durchlauf begleitet einen kompletten Gerätezyklus (warten auf Betrieb, warten auf
+# Standby, Fenster durchhalten). Deshalb "single": läuft schon einer, ist er zuständig,
+# und jeder weitere Trigger wäre nur ein Duplikat.
+mode: single
+max_exceeded: silent
+
+triggers:
+  # Der eigentliche Anlass: die Leistung fällt in den Standby-Bereich.
+  - trigger: numeric_state
+    entity_id: !input leistungssensor
+    below: !input standby_schwelle
+    id: standby
+
+  # Verbraucher wurde eingeschaltet -> Durchlauf beginnt und wartet auf den Betrieb.
+  # Wichtig für die Betriebserkennung, die den Betriebsbeginn mitbekommen muss.
+  - trigger: state
+    entity_id: !input ziele
+    to: "on"
+    id: ein
+
+  # Selbstheilung: nach Neustart/Reload ist kein Durchlauf mehr aktiv.
+  - trigger: homeassistant
+    event: start
+    id: neustart
+  - trigger: time_pattern
+    minutes: !input sync_intervall
+    id: sync
+
+conditions: []
+
+variables:
+  v_sensor: !input leistungssensor
+  v_schwelle: !input standby_schwelle
+  v_dauer_min: !input standby_dauer
+  v_toleranz: !input spitzen_toleranz
+  v_start_schwelle: !input start_schwelle
+  v_sperren: !input sperr_entitaeten
+  v_min_dauer_min: !input min_einschaltdauer
+  v_max_versuche: !input max_versuche
+  v_selbstheilung: !input selbstheilung
+  v_push_kritisch: !input push_kritisch
+
+  # Für eigene Texte und Aktionen nutzbar
+  bezeichnung: !input bezeichnung
+  ziel_liste: !input ziele
+
+actions:
+  # -----------------------------------------------------------------------
+  # 1. Grundprüfungen
+  # -----------------------------------------------------------------------
+  - alias: Zyklische Nachprüfung respektieren
+    condition: template
+    value_template: >-
+      {{ trigger is not defined
+         or (trigger.id | default('manuell')) != 'sync'
+         or v_selbstheilung }}
+
+  - alias: Es muss überhaupt etwas eingeschaltet sein
+    condition: template
+    value_template: >-
+      {{ expand(ziel_liste) | selectattr('state', 'eq', 'on') | list | count > 0 }}
+
+  - alias: Keine Sperre aktiv
+    condition: template
+    value_template: >-
+      {{ expand(v_sperren) | selectattr('state', 'eq', 'on') | list | count == 0 }}
+
+  # Beim HA-Start ist der Sensor kurz "unavailable" oder "unknown". Ein nicht lesbarer
+  # Messwert darf nicht als "0 W, also Standby" durchgehen.
+  - alias: Leistungssensor muss einen Zahlenwert liefern
+    condition: template
+    value_template: "{{ states(v_sensor) | float(-1) >= 0 }}"
+
+  # -----------------------------------------------------------------------
+  # 2. Betriebserkennung: erst abschalten, wenn das Gerät gelaufen ist
+  # -----------------------------------------------------------------------
+  - alias: Auf Betriebsbeginn warten
+    if:
+      - condition: template
+        value_template: >-
+          {{ v_start_schwelle > 0
+             and (states(v_sensor) | float(0)) <= v_start_schwelle }}
+    then:
+      - wait_for_trigger:
+          - trigger: numeric_state
+            entity_id: !input leistungssensor
+            above: !input start_schwelle
+            id: betrieb
+          - trigger: state
+            entity_id: !input ziele
+            to: "off"
+            id: aus
+        # Notbremse gegen einen Durchlauf, der ewig wartet, weil Sensor oder Aktor
+        # dauerhaft "unavailable" geworden sind: bei "single" wuerde er die Automation
+        # bis zum naechsten HA-Neustart blockieren.
+        timeout: "24:00:00"
+        continue_on_timeout: true
+      - alias: Abbruch, wenn stattdessen ausgeschaltet wurde
+        if:
+          - condition: template
+            value_template: >-
+              {{ wait.trigger is none or wait.trigger.id | default('') == 'aus' }}
+        then:
+          - stop: >-
+              Kein Betrieb erkannt (ausgeschaltet oder Wartezeit abgelaufen) - die
+              zyklische Nachpruefung setzt neu auf
+
+  # -----------------------------------------------------------------------
+  # 3. Auf das Ende des Betriebs warten
+  # -----------------------------------------------------------------------
+  - alias: Auf Unterschreiten der Standby-Schwelle warten
+    if:
+      - condition: template
+        value_template: "{{ (states(v_sensor) | float(0)) >= v_schwelle }}"
+    then:
+      - wait_for_trigger:
+          - trigger: numeric_state
+            entity_id: !input leistungssensor
+            below: !input standby_schwelle
+            id: standby
+          - trigger: state
+            entity_id: !input ziele
+            to: "off"
+            id: aus
+        timeout: "24:00:00"
+        continue_on_timeout: true
+      - alias: Abbruch, wenn von Hand ausgeschaltet wurde
+        if:
+          - condition: template
+            value_template: >-
+              {{ wait.trigger is none or wait.trigger.id | default('') == 'aus' }}
+        then:
+          - stop: >-
+              Kein Standby erreicht (ausgeschaltet oder Wartezeit abgelaufen) - die
+              zyklische Nachpruefung setzt neu auf
+
+  # -----------------------------------------------------------------------
+  # 4. Beobachtungsfenster durchhalten
+  #
+  # Statt eines "for:" am Trigger wird das Fenster hier selbst gehalten: nur so lassen
+  # sich kurze Nachlaufspitzen (Knitterschutz) tolerieren, ohne von vorn zu beginnen.
+  # -----------------------------------------------------------------------
+  - variables:
+      fenster_ende: "{{ (now() + timedelta(minutes = v_dauer_min | float(20))).isoformat() }}"
+
+  - alias: Fenster halten und Spitzen bewerten
+    repeat:
+      sequence:
+        - alias: Auf eine Leistungsspitze warten, höchstens bis zum Fensterende
+          wait_for_trigger:
+            - trigger: numeric_state
+              entity_id: !input leistungssensor
+              above: !input standby_schwelle
+              id: spitze
+          timeout: >-
+            {{ [1, (as_datetime(fenster_ende) - now()).total_seconds()] | max }}
+          continue_on_timeout: true
+
+        - alias: Spitze bewerten
+          if:
+            - condition: template
+              value_template: "{{ wait.trigger is not none }}"
+          then:
+            - alias: Ohne Toleranz gilt jede Spitze als Wiederaufnahme
+              if:
+                - condition: template
+                  value_template: "{{ v_toleranz | float(0) <= 0 }}"
+              then:
+                - stop: Verbraucher wieder in Betrieb
+
+            - alias: Klingt die Spitze innerhalb der Toleranz ab?
+              wait_template: "{{ (states(v_sensor) | float(0)) < v_schwelle }}"
+              timeout: "{{ v_toleranz | float(0) }}"
+              continue_on_timeout: true
+
+            - alias: Zu lange über der Schwelle - das ist kein Nachlauf
+              if:
+                - condition: template
+                  value_template: "{{ not wait.completed }}"
+              then:
+                - stop: Verbraucher wieder in Betrieb
+      until:
+        - condition: template
+          value_template: "{{ now() >= as_datetime(fenster_ende) }}"
+
+  # -----------------------------------------------------------------------
+  # 5. Prüfungen unmittelbar vor dem Abschalten
+  # -----------------------------------------------------------------------
+  - alias: Ist noch etwas eingeschaltet?
+    condition: template
+    value_template: >-
+      {{ expand(ziel_liste) | selectattr('state', 'eq', 'on') | list | count > 0 }}
+
+  - alias: Ist in der Zwischenzeit eine Sperre aktiv geworden?
+    condition: template
+    value_template: >-
+      {{ expand(v_sperren) | selectattr('state', 'eq', 'on') | list | count == 0 }}
+
+  - alias: Mindest-Einschaltdauer erreicht?
+    condition: template
+    value_template: >-
+      {% if v_min_dauer_min | float(0) <= 0 %}true{% else %}
+      {% set ns = namespace(kuerzeste = 999999999) %}
+      {% for e in expand(ziel_liste) | selectattr('state', 'eq', 'on')
+                  | map(attribute='entity_id') | list %}
+      {% set ns.kuerzeste = [ns.kuerzeste,
+           (now() | as_timestamp) - (states[e].last_changed | as_timestamp)] | min %}
+      {% endfor %}
+      {{ ns.kuerzeste >= (v_min_dauer_min | float(0)) * 60 }}{% endif %}
+
+  # -----------------------------------------------------------------------
+  # 6. Abschalten, nachprüfen, bei Bedarf wiederholen
+  # -----------------------------------------------------------------------
+  - variables:
+      leistung: "{{ states(v_sensor) | float(0) | round(1) }}"
+
+  - alias: Abschalten mit Wiederholung
+    repeat:
+      sequence:
+        # "repeat.index" ist nach der Schleife nicht mehr im Scope
+        - variables:
+            versuche: "{{ repeat.index }}"
+        - action: homeassistant.turn_off
+          continue_on_error: true
+          target:
+            entity_id: >-
+              {{ expand(ziel_liste) | selectattr('state', 'ne', 'off')
+                 | map(attribute='entity_id') | list }}
+        - delay:
+            seconds: !input pruefung_verzoegerung
+      until:
+        - condition: template
+          value_template: >-
+            {{ expand(ziel_liste) | selectattr('state', 'ne', 'off') | list | count == 0
+               or repeat.index >= v_max_versuche }}
+
+  # -----------------------------------------------------------------------
+  # 7. Ergebnis melden
+  # -----------------------------------------------------------------------
+  - variables:
+      restliche: >-
+        {{ expand(ziel_liste) | selectattr('state', 'ne', 'off')
+           | map(attribute='entity_id') | list }}
+      erfolg: >-
+        {{ expand(ziel_liste) | selectattr('state', 'ne', 'off') | list | count == 0 }}
+      push_extra: >-
+        {{ {'push': {'sound': {'name': 'default', 'critical': 1, 'volume': 1.0}}}
+           if v_push_kritisch else {} }}
+
+  - alias: Push und Zusatzaktion
+    if:
+      - condition: template
+        value_template: "{{ erfolg }}"
+    then:
+      - alias: Erfolgsmeldung senden
+        repeat:
+          for_each: !input push_geraete_erfolg
+          sequence:
+            # Der Notify-Dienst der Companion-App heisst notify.mobile_app_<Geraetename>.
+            # device_attr(...,'name') liefert den Namen zur Registrierungszeit - genau
+            # den, aus dem der Dienstname gebildet wurde.
+            - action: "notify.mobile_app_{{ device_attr(repeat.item, 'name') | slugify }}"
+              continue_on_error: true
+              data:
+                title: !input push_titel
+                message: !input push_text_erfolg
+      - alias: Zusatzaktion bei Erfolg
+        sequence: !input aktion_bei_erfolg
+    else:
+      - alias: Fehlermeldung senden
+        repeat:
+          for_each: !input push_geraete_fehler
+          sequence:
+            - action: "notify.mobile_app_{{ device_attr(repeat.item, 'name') | slugify }}"
+              continue_on_error: true
+              data:
+                title: !input push_titel
+                message: !input push_text_fehler
+                data: "{{ push_extra }}"
+      - alias: Zusatzaktion bei Fehlschlag
+        sequence: !input aktion_bei_fehler
