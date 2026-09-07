@@ -6,7 +6,7 @@ Sammlung eigener Automations-Blueprints für [Home Assistant](https://www.home-a
 
 | Blueprint | Domain | Kurzbeschreibung | Min. HA |
 |---|---|---|---|
-| [Zeitschaltuhr mit Schaltbestätigung](#zeitschaltuhr-mit-schaltbestätigung) | `automation` | Zeitschaltuhr, die nachprüft, ob der Schaltbefehl angekommen ist | 2024.10 |
+| [Zeitschaltuhr mit Schaltbestätigung](#zeitschaltuhr-mit-schaltbestätigung) | `automation` | Zeitschaltuhr mit Master/Betriebsart-Hierarchie, die nachprüft, ob der Schaltbefehl angekommen ist | 2024.10 |
 
 ## Aufbau
 
@@ -74,30 +74,44 @@ im Schaltmoment neu gestartet – bleibt die Last unbemerkt an. Dieser Blueprint
 Ist-Zustand nach dem Schalten zurück, wiederholt gezielt für die Entitäten, die nicht
 reagiert haben, und meldet erst dann Erfolg oder Fehlschlag.
 
+### Zwei Ebenen
+
+Der Blueprint kennt eine Hierarchie mit **je eigenem Verhalten**:
+
+1. **Master-Schalter** – sinnbildlich der Stecker der Zeitschaltuhr. Hat Vorrang.
+2. **Zeitschaltuhr aktiv** – die Betriebsart: regiert der Zeitplan, oder ist Handbetrieb?
+
+Damit lässt sich „Stecker gezogen = Last aus" und „Betriebsart aus = Hände weg" gleichzeitig
+abbilden – zwei Anforderungen, die sich mit nur einem Schalter widersprechen würden.
+
 ### Ablauf
 
 ```
-Zeitschaltuhr aktiv?  ──nein──▶  Handbetrieb: nichts tun
-        │                        oder Zwangs-Aus: ausschalten
+Trigger (Zeitplan / Schalter / Neustart / zyklisch)
+        ▼
+alle Master-Schalter on ?  ──nein──▶  Verhalten bei Master aus
+        │                             (Zwangs-Aus oder Handbetrieb)
         ja
         ▼
-Freigaben erfüllt?    ──nein──▶  (dito)
-        │
+Zeitschaltuhr aktiv on ?   ──nein──▶  Verhalten bei Zeitschaltuhr aus
+        │                             (Handbetrieb oder Zwangs-Aus)
         ja
         ▼
-Zeitplan sagt on/off  ──▶  Soll-Zustand
-        ▼
-Ist == Soll?          ──ja───▶  fertig, keine Meldung
+Soll = Zustand des Zeitplans (on / off)
         │
-        nein
-        ▼
+        └──────────┬─────────────────  Handbetrieb ▶ ENDE, keine Meldung
+                   ▼
+           Ist == Soll ?  ──ja──▶  ENDE, keine Meldung
+                   │
+                  nein
+                   ▼
    ┌─────────────────────────────────┐
    │ schalten (nur die Abweichenden) │
    │ warten                          │
    │ Ist-Zustand zurücklesen         │◀── bis alle im Soll
    └─────────────────────────────────┘    oder max. Versuche
-        ▼
-Erfolgs- oder Fehler-Aktion
+                   ▼
+        Erfolgs- oder Fehler-Aktion
 ```
 
 ### Eingaben
@@ -105,9 +119,10 @@ Erfolgs- oder Fehler-Aktion
 | Feld | Pflicht | Default | Beschreibung |
 |---|---|---|---|
 | **Zeitplan** | ja | – | `schedule.*`-Helfer. `on` = Ziele an, `off` = Ziele aus. Wochentage und mehrere Blöcke pro Tag konfigurierst du im Helfer selbst. |
-| **Zeitschaltuhr aktiv** | ja | – | `input_boolean` als Hauptschalter |
-| **Zusätzliche Freigaben** | nein | – | Alle müssen `on` sein, z. B. `input_boolean.poolsaison` |
-| **Verhalten bei deaktivierter Zeitschaltuhr** | nein | Handbetrieb | *Handbetrieb* = Automatik hält sich raus · *Zwangs-Aus* = Ziele werden ausgeschaltet |
+| **Master-Schalter** | nein | – | Oberste Ebene, „der Stecker". Alle müssen `on` sein. Hat Vorrang vor der Betriebsart. |
+| **Verhalten bei ausgeschaltetem Master** | nein | Zwangs-Aus | *Zwangs-Aus* = Ziele werden ausgeschaltet · *Handbetrieb* = Automatik hält sich raus |
+| **Zeitschaltuhr aktiv** | ja | – | `input_boolean` als Betriebsart-Schalter |
+| **Verhalten bei deaktivierter Zeitschaltuhr** | nein | Handbetrieb | *Handbetrieb* = aktueller Zustand bleibt, du schaltest frei · *Zwangs-Aus* = Ziele werden ausgeschaltet |
 | **Zu schaltende Entitäten** | ja | – | `switch`, `light`, `input_boolean`, `fan`, `media_player` |
 | **Wartezeit vor der Nachprüfung** | nein | 10 s | Bei Funk-Aktoren großzügiger wählen |
 | **Maximale Schaltversuche** | nein | 5 | Wiederholt nur für die Entitäten, die noch nicht reagiert haben |
@@ -121,27 +136,66 @@ Erfolgs- oder Fehler-Aktion
 | Variable | Inhalt |
 |---|---|
 | `soll_zustand` | `on` oder `off` |
+| `grund` | `zeitplan`, `master_aus` oder `zeitschaltuhr_aus` |
+| `grund_text` | Dasselbe im Klartext, z. B. `Master-Schalter aus` |
 | `ziel_liste` | Alle konfigurierten Ziel-Entitäten |
 | `restliche` | Entitäten, die den Soll-Zustand **nicht** erreicht haben |
 | `versuche` | Anzahl der Schaltversuche |
 
-Beispiel für eine Push-Benachrichtigung als Fehler-Aktion:
+> **Die beiden Meldungsfelder sind unabhängig.** Die Fehler-Aktion erbt nichts von der
+> Erfolgs-Aktion. Lässt du sie auf dem Standard, bekommst du im Fehlerfall nur eine
+> persistente Benachrichtigung in der HA-Oberfläche – keinen Push. Trag in beide Felder
+> ein, was du wirklich willst.
+
+Beispiel für einen Push aufs Handy als Erfolgs-Aktion:
 
 ```yaml
 action: notify.mobile_app_dein_handy
 data:
-  title: Zeitschaltuhr – Schaltfehler
-  message: >-
-    Konnte nach {{ versuche }} Versuch(en) nicht auf '{{ soll_zustand }}'
-    schalten: {{ restliche | join(', ') }}
+  message: "{{ grund_text }}: auf '{{ soll_zustand }}' geschaltet."
 ```
+
+Und als Fehler-Aktion, als kritische Benachrichtigung, die auch bei stummem iPhone
+durchkommt:
+
+```yaml
+action: notify.mobile_app_dein_handy
+data:
+  title: Schaltfehler
+  message: >-
+    {{ grund_text }}: konnte nach {{ versuche }} Versuch(en) nicht auf
+    '{{ soll_zustand }}' schalten – {{ restliche | join(', ') }}
+  data:
+    push:
+      sound:
+        name: default
+        critical: 1
+        volume: 1.0
+```
+
+### Beispielkonfiguration: Poolsteuerung
+
+Zwei Helfer, klar getrennte Bedeutung:
+
+| Helfer | Rolle | Blueprint-Feld |
+|---|---|---|
+| `input_boolean.pool_periode` | Poolsaison – „Zeitschaltuhr eingesteckt" | Master-Schalter, Verhalten **Zwangs-Aus** |
+| `input_boolean.pool_zeitschaltplan` | Betriebsart – Zeitplan oder Handbetrieb | Zeitschaltuhr aktiv, Verhalten **Handbetrieb** |
+
+Daraus ergibt sich:
+
+| Periode | Zeitschaltplan | Verhalten |
+|---|---|---|
+| an | an | Zeitplan regiert, Schaltbestätigung und Korrektur aktiv |
+| an | aus | Handbetrieb – Zustand bleibt, freies Schalten (z. B. Pumpe für die Heizung) |
+| aus | egal | Saisonende: Pumpe wird ausgeschaltet, mit Meldung |
 
 ### Trigger
 
 | ID | Trigger | Zweck |
 |---|---|---|
 | `zeitplan` | `state` auf den Zeitplan, `to: "on"` / `to: "off"` | Regulärer Schaltzeitpunkt |
-| `freigabe` | `state` auf Aktiv-Schalter und Freigaben, `to: ["on", "off"]` | Sofortige Neubewertung |
+| `schalter` | `state` auf Master-Schalter und Betriebsart, `to: ["on", "off"]` | Sofortige Neubewertung |
 | `neustart` | `homeassistant` / `start` | Nach einem Neustart verpasste Schaltzeitpunkte nachholen |
 | `sync` | `time_pattern` | Verlorene Funkbefehle einfangen |
 
@@ -162,18 +216,23 @@ data:
   abbricht und die Fehlermeldung noch zugestellt wird.
 - **Abbruch bei `Ist == Soll`** vor dem Schalten – sonst würde die zyklische Nachprüfung
   Erfolgsmeldungen im Minutentakt produzieren.
+- **Master vor Betriebsart.** Ist beides aus, gilt das Master-Verhalten. „Stecker gezogen"
+  schlägt „Betriebsart".
 
 ### Bekannte Einschränkungen
 
-- Solange die Zeitschaltuhr aktiv und die zyklische Nachprüfung eingeschaltet ist, wird
-  manuelles Schalten innerhalb des Zeitfensters wieder korrigiert. Für Handbetrieb den
-  Aktiv-Schalter ausschalten oder die Nachprüfung deaktivieren.
+- **Manuelles Schalten bei aktiver Zeitschaltuhr wird korrigiert.** Wer die Last außerhalb
+  des Zeitfensters von Hand einschaltet, wird von der zyklischen Nachprüfung innerhalb des
+  eingestellten Intervalls wieder überstimmt. Richtige Reihenfolge also: **erst die
+  Betriebsart ausschalten, dann von Hand schalten.**
+- Stille kann drei Dinge bedeuten: Automatik nicht zuständig, Zustand stimmte schon, oder
+  die Automation lief nicht. Unterscheiden lässt sich das nur über die Traces.
 - `unavailable`-Ziele gelten als Abweichung, werden bis zum Versuchslimit angestoßen und
   danach als Fehler gemeldet. Das ist beabsichtigt.
-- Die zusätzlichen Freigaben werden mit Default `[]` als `entity_id` in einem State-Trigger
+- Die Master-Schalter werden mit Default `[]` als `entity_id` in einem State-Trigger
   verwendet. Eine leere Liste registriert einfach keinen Listener. Sollte eine HA-Version das
-  beim Speichern beanstanden, den Trigger mit `id: freigabe` auf die Freigaben entfernen – die
-  zyklische Nachprüfung fängt Änderungen dann verzögert ab.
+  beim Speichern beanstanden, den betreffenden Trigger entfernen – die zyklische Nachprüfung
+  fängt Änderungen dann verzögert ab.
 
 ---
 

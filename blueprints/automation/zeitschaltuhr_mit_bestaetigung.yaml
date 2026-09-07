@@ -20,10 +20,15 @@ blueprint:
     Reload) nicht mehr durchs Raster.
 
 
+    **Zwei Ebenen:** Der *Master-Schalter* ist der Stecker – ist er aus, gilt sein
+    eigenes Verhalten und hat Vorrang. Die *Zeitschaltuhr aktiv* ist die Betriebsart –
+    ist sie aus, gilt ihr eigenes Verhalten. Typische Kombination: Master aus =
+    Zwangs-Aus, Betriebsart aus = Handbetrieb.
+
+
     **Wichtig zur Nachprüfung:** Solange die Zeitschaltuhr aktiv ist, setzt die
     zyklische Nachprüfung den Soll-Zustand auch gegen manuelles Schalten durch.
-    Für Handbetrieb den Aktiv-Schalter ausschalten – oder die Nachprüfung
-    deaktivieren.
+    Für Handbetrieb die Betriebsart ausschalten – oder die Nachprüfung deaktivieren.
   domain: automation
 
   input:
@@ -43,27 +48,18 @@ blueprint:
               filter:
                 - domain: schedule
 
-    freigaben:
-      name: Freigaben
+    schalter:
+      name: Schalter und Betriebsart
       icon: mdi:toggle-switch-outline
       collapsed: false
       input:
-        aktiv_schalter:
-          name: Zeitschaltuhr aktiv
+        master_entitaeten:
+          name: Master-Schalter (optional)
           description: >-
-            Hauptschalter der Zeitschaltuhr. Steht er auf `off`, greift das unten
-            gewählte Verhalten bei deaktivierter Zeitschaltuhr.
-          selector:
-            entity:
-              filter:
-                - domain: input_boolean
-
-        freigabe_entitaeten:
-          name: Zusätzliche Freigaben (optional)
-          description: >-
-            Alle hier gewählten Entitäten müssen `on` sein, damit die Zeitschaltuhr
-            schaltet – z. B. ein `input_boolean.poolsaison`. Leer lassen, wenn nicht
-            benötigt.
+            Die oberste Ebene – sinnbildlich der Stecker der Zeitschaltuhr. Alle hier
+            gewählten Entitäten müssen `on` sein, damit überhaupt etwas läuft, z. B.
+            ein `input_boolean.poolsaison`. Hat Vorrang vor der Betriebsart. Leer
+            lassen, wenn nicht benötigt.
           default: []
           selector:
             entity:
@@ -74,10 +70,36 @@ blueprint:
                 - domain: switch
                 - domain: schedule
 
-        verhalten_bei_deaktivierung:
+        verhalten_bei_master_aus:
+          name: Verhalten bei ausgeschaltetem Master
+          description: >-
+            Was passiert, wenn ein Master-Schalter auf `off` steht. „Stecker gezogen"
+            bedeutet üblicherweise, dass die Last aus soll.
+          default: ausschalten
+          selector:
+            select:
+              mode: list
+              options:
+                - label: "Zwangs-Aus – Ziel-Entitäten werden ausgeschaltet"
+                  value: ausschalten
+                - label: "Handbetrieb – Automatik hält sich komplett raus"
+                  value: handbetrieb
+
+        aktiv_schalter:
+          name: Zeitschaltuhr aktiv
+          description: >-
+            Die Betriebsart. `on` = der Zeitplan regiert. `off` = es gilt das unten
+            gewählte Verhalten.
+          selector:
+            entity:
+              filter:
+                - domain: input_boolean
+
+        verhalten_bei_zeitschaltuhr_aus:
           name: Verhalten bei deaktivierter Zeitschaltuhr
           description: >-
-            Was passiert, wenn der Aktiv-Schalter oder eine Freigabe auf `off` steht.
+            Was passiert, wenn die Betriebsart auf `off` steht. Handbetrieb heißt: der
+            aktuelle Zustand bleibt unangetastet und du schaltest frei von Hand.
           default: handbetrieb
           selector:
             select:
@@ -175,14 +197,15 @@ blueprint:
           description: >-
             Läuft nur, wenn tatsächlich geschaltet wurde und alle Ziel-Entitäten den
             Soll-Zustand erreicht haben. Nutzbare Variablen: `soll_zustand`
-            (`on`/`off`), `ziel_liste` (alle Ziele), `versuche` (Anzahl Schaltversuche).
+            (`on`/`off`), `grund_text` (Auslöser im Klartext), `ziel_liste` (alle Ziele),
+            `versuche` (Anzahl Schaltversuche).
           default:
             - action: logbook.log
               data:
                 name: Zeitschaltuhr
                 message: >-
-                  Schaltvorgang auf '{{ soll_zustand }}' erfolgreich
-                  ({{ versuche }} Versuch(e)): {{ ziel_liste | join(', ') }}
+                  {{ grund_text }}: auf '{{ soll_zustand }}' geschaltet
+                  ({{ versuche }} Versuch(e)) – {{ ziel_liste | join(', ') }}
           selector:
             action: {}
 
@@ -190,15 +213,15 @@ blueprint:
           name: Aktion bei Fehlschlag
           description: >-
             Läuft, wenn nach allen Versuchen noch Entitäten den Soll-Zustand nicht
-            erreicht haben. Nutzbare Variablen: `soll_zustand`, `restliche`
-            (Entitäten, die nicht reagiert haben), `versuche`.
+            erreicht haben. Nutzbare Variablen: `soll_zustand`, `grund_text`,
+            `restliche` (Entitäten, die nicht reagiert haben), `versuche`.
           default:
             - action: persistent_notification.create
               data:
                 title: Zeitschaltuhr – Schaltfehler
                 message: >-
-                  Konnte nach {{ versuche }} Versuch(en) nicht auf
-                  '{{ soll_zustand }}' schalten: {{ restliche | join(', ') }}
+                  {{ grund_text }}: konnte nach {{ versuche }} Versuch(en) nicht auf
+                  '{{ soll_zustand }}' schalten – {{ restliche | join(', ') }}
           selector:
             action: {}
 
@@ -220,15 +243,15 @@ triggers:
     to: "off"
     id: zeitplan
 
-  # Aktiv-Schalter oder Freigaben geändert -> sofort neu bewerten
+  # Master oder Betriebsart geändert -> sofort neu bewerten
+  - trigger: state
+    entity_id: !input master_entitaeten
+    to: ["on", "off"]
+    id: schalter
   - trigger: state
     entity_id: !input aktiv_schalter
     to: ["on", "off"]
-    id: freigabe
-  - trigger: state
-    entity_id: !input freigabe_entitaeten
-    to: ["on", "off"]
-    id: freigabe
+    id: schalter
 
   # Selbstheilung
   - trigger: homeassistant
@@ -243,21 +266,33 @@ conditions: []
 variables:
   v_zeitplan: !input zeitplan
   v_aktiv: !input aktiv_schalter
-  v_freigaben: !input freigabe_entitaeten
-  v_verhalten: !input verhalten_bei_deaktivierung
+  v_master: !input master_entitaeten
+  v_verhalten_master: !input verhalten_bei_master_aus
+  v_verhalten_uhr: !input verhalten_bei_zeitschaltuhr_aus
   v_nachpruefung: !input nachpruefung
   v_max_versuche: !input max_versuche
 
   ziel_liste: !input ziele
 
-  # Sind Aktiv-Schalter UND alle zusätzlichen Freigaben "on"?
-  freigegeben: >-
-    {{ is_state(v_aktiv, 'on')
-       and expand(v_freigaben) | selectattr('state', 'ne', 'on') | list | count == 0 }}
+  # Ebene 1: sind alle Master-Schalter "on"? (leere Liste = ja)
+  master_ok: >-
+    {{ expand(v_master) | selectattr('state', 'ne', 'on') | list | count == 0 }}
 
-  # Soll-Zustand: 'on', 'off' oder 'egal' (= Automatik ist nicht zuständig)
+  # Ebene 2: ist die Betriebsart "on"?
+  uhr_ok: "{{ is_state(v_aktiv, 'on') }}"
+
+  # Soll-Zustand: 'on', 'off' oder 'egal' (= Automatik ist nicht zuständig).
+  # Der Master hat Vorrang vor der Betriebsart.
   soll_zustand: >-
-    {% if freigegeben %}{{ 'on' if is_state(v_zeitplan, 'on') else 'off' }}{% elif v_verhalten == 'ausschalten' %}off{% else %}egal{% endif %}
+    {% if not master_ok %}{{ 'off' if v_verhalten_master == 'ausschalten' else 'egal' }}{% elif not uhr_ok %}{{ 'off' if v_verhalten_uhr == 'ausschalten' else 'egal' }}{% else %}{{ 'on' if is_state(v_zeitplan, 'on') else 'off' }}{% endif %}
+
+  # Auslöser, maschinenlesbar
+  grund: >-
+    {% if not master_ok %}master_aus{% elif not uhr_ok %}zeitschaltuhr_aus{% else %}zeitplan{% endif %}
+
+  # Auslöser im Klartext, für Meldungen
+  grund_text: >-
+    {% if grund == 'master_aus' %}Master-Schalter aus{% elif grund == 'zeitschaltuhr_aus' %}Zeitschaltuhr deaktiviert{% else %}Zeitplan{% endif %}
 
   # Ziel-Entitäten, die aktuell nicht im Soll-Zustand sind
   abweichend: >-
