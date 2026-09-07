@@ -492,6 +492,52 @@ niedrigsten Dauerlast im Betrieb liegt.
 - **Sperren zweimal geprüft** – beim Start des Fensters und direkt vor dem Schaltbefehl.
   Eine Sperre, die während der Beobachtung gesetzt wird, greift also noch.
 
+### Traces lesen
+
+Zwei Dinge im Trace sehen nach Fehler aus und sind keiner.
+
+**Der wartende Durchlauf.** Solange der Verbraucher läuft, steht der Durchlauf im Schritt
+*Auf einen von 2 Auslösern warten* und zeigt:
+
+```
+result: false
+state: 44
+wanted_state_below: 20
+```
+
+`result: false` ist nicht das Ergebnis des Schritts, sondern die Zustandsauswertung beim
+Registrieren des Listeners: „44 W ist nicht unter 20 W, hier gibt es nichts zu
+überspringen." Der Schritt ist **aktiv** und wartet auf eins von drei Ereignissen –
+Leistung unter die Schwelle, Ziel-Entität auf `off`, oder die 24-Stunden-Notbremse.
+
+**Die verworfenen Läufe.** Jeder `sync`-Trigger, der auf einen laufenden Durchlauf
+trifft, endet mit:
+
+```
+Gestoppt, da nur eine einzige Ausführung zulässig ist (Laufzeit: 0.00 Sekunden)
+```
+
+Das ist `mode: single` bei der Arbeit: der wartende Durchlauf hat genau das Ereignis
+abonniert, auf das es ankommt, ein zweiter wäre nur ein Duplikat. `max_exceeded: silent`
+unterdrückt dabei nur die `WARNING`-Zeile im Log, nicht den Trace-Eintrag.
+
+**Praktischer Nebeneffekt:** Home Assistant speichert standardmäßig nur **5 Traces pro
+Automation**. Läuft ein Verbraucher stundenlang, verdrängen die verworfenen Läufe genau
+den Trace, der interessant ist. Zwei Wege:
+
+- **Intervall der Nachprüfung auf `/15` stellen.** Bei 20 Minuten Beobachtungsdauer bringt
+  eine Nachprüfung jede Minute nichts – sie startet nur häufiger einen Durchlauf, der
+  ohnehin wartet.
+- **Trace-Puffer aufdrehen.** In der Automation *In YAML bearbeiten* und ergänzen:
+
+  ```yaml
+  trace:
+    stored_traces: 25
+  ```
+
+  Das ist eine Eigenschaft der Automation, nicht des Blueprints, und übersteht auch ein
+  *Blueprint neu importieren*.
+
 ### Bekannte Einschränkungen
 
 - **Fällt Home Assistant genau in der Nachlaufphase aus** – Programm gelaufen, Leistung
@@ -508,6 +554,8 @@ niedrigsten Dauerlast im Betrieb liegt.
   und danach als Fehler gemeldet. Beabsichtigt.
 - **Der Notify-Dienstname hängt am Gerätenamen zur Registrierungszeit.** App neu
   registrieren kann ihn ändern – dann das Gerät im Blueprint neu auswählen.
+- **Der Trace-Puffer läuft mit verworfenen `sync`-Läufen voll**, solange ein Verbraucher
+  arbeitet. Kein Funktionsproblem, aber lästig beim Debuggen – siehe *Traces lesen*.
 
 ### Migration von einer eigenen Automation
 
