@@ -496,7 +496,19 @@ triggers:
     from: "off"
     to: "on"
 
-conditions: []
+# Beide Prüfungen stehen bewusst HIER und nicht als erste Aktion. Home Assistant wertet
+# den conditions-Block aus, BEVOR "mode: restart" einen laufenden Durchlauf abbricht
+# (automation/__init__.py: erst _cond_func, dann action_script.async_run). Als Aktion
+# formuliert käme die Prüfung zu spät - der wartende Durchlauf wäre schon abgeräumt,
+# und niemand schaltet das Licht mehr aus. Genau das passierte beim eigenen Einschalten.
+conditions:
+  - alias: Nur echte Auslöser verarbeiten
+    condition: template
+    value_template: "{{ ausloeser_gueltig }}"
+
+  - alias: Vollsperre beachten
+    condition: template
+    value_template: "{{ not (sperre_aktiv and v_sperr_verhalten == 'beides') }}"
 
 variables:
   v_melder: !input bewegungsmelder
@@ -524,7 +536,8 @@ variables:
   # (Wandschalter, App, Sprache). Mit parent_id steckt eine Automation oder ein Skript
   # dahinter - allen voran diese hier, wenn sie gerade selbst eingeschaltet hat.
   ausloeser_gueltig: >-
-    {{ trigger.id | default('') != 'manuell'
+    {{ trigger is not defined
+       or trigger.id | default('') != 'manuell'
        or (v_manueller_trigger and trigger.to_state.context.parent_id is none) }}
 
   # Sperre zum Startzeitpunkt. Vor dem Ausschalten wird sie erneut ausgewertet.
@@ -554,17 +567,7 @@ variables:
        | map(attribute='entity_id') | list }}
 
 actions:
-  # 1. Auslöser prüfen: eigenes Einschalten darf den Durchlauf nicht neu starten.
-  - alias: Nur echte Auslöser verarbeiten
-    condition: template
-    value_template: "{{ ausloeser_gueltig }}"
-
-  # 2. Vollsperre?
-  - alias: Vollsperre beachten
-    condition: template
-    value_template: "{{ not (sperre_aktiv and v_sperr_verhalten == 'beides') }}"
-
-  # 3. Einschalten - nur bei Bewegung, nur wenn dunkel genug, nur was aus ist.
+  # 1. Einschalten - nur bei Bewegung, nur wenn dunkel genug, nur was aus ist.
   #    Die Dunkelheitsprüfung sitzt bewusst hier und nicht im "conditions"-Block:
   #    ein Durchlauf muss auch tagsüber bis zum Ausschalten kommen, sonst bliebe
   #    von Hand eingeschaltetes Licht am Tag ewig an.
@@ -688,7 +691,7 @@ actions:
                 value_template: "{{ restliche | count > 0 }}"
             then: !input aktion_bei_fehler
 
-  # 4. Warten, bis alle Melder frei melden. wait_template wird sofort ausgewertet -
+  # 2. Warten, bis alle Melder frei melden. wait_template wird sofort ausgewertet -
   #    ist ohnehin schon Ruhe, geht es direkt weiter. Der Abbruch bei manuellem Aus
   #    steht vorn im Template, damit die Lichter immer als Listener registriert werden.
   - alias: Warten bis keine Bewegung mehr
@@ -700,7 +703,7 @@ actions:
       {{ (v_sicherheits_timeout | int * 60) if (v_sicherheits_timeout | int) > 0 else 86400 }}
     continue_on_timeout: true
 
-  # 5. Nachlaufzeit. Als wait_template statt delay, damit ein manuelles Ausschalten
+  # 3. Nachlaufzeit. Als wait_template statt delay, damit ein manuelles Ausschalten
   #    den Durchlauf sofort beendet, statt später noch einen Befehl zu schicken.
   - alias: Nachlaufzeit
     wait_template: >-
@@ -709,7 +712,7 @@ actions:
     timeout: "{{ v_nachlaufzeit | int }}"
     continue_on_timeout: true
 
-  # 6. Ausschalten - nur wenn überhaupt noch etwas nicht aus ist und keine Sperre greift.
+  # 4. Ausschalten - nur wenn überhaupt noch etwas nicht aus ist und keine Sperre greift.
   #    "nicht aus" statt "an": ein unavailable Aktor gilt als Abweichung und wird
   #    angestossen, sonst bliebe ein hängendes Gerät unbemerkt an.
   - alias: Ergebnis der Wartezeit

@@ -82,16 +82,17 @@ der Entitäten, die nicht reagiert haben), `versuche`, `melde_text`.
 
 ## Ablauf
 
-1. **Auslöser prüfen.** Ein `manuell`-Auslöser zählt nur, wenn er wirklich von Hand kam
-   (siehe [Designentscheidungen](#warum-der-kontext-des-zustandswechsels-geprüft-wird)).
-2. **Vollsperre?** Dann endet der Durchlauf sofort.
-3. **Einschalten** — nur bei Bewegung, nur wenn es dunkel genug ist, nur für Ziele, die
+0. **Torwächter im `conditions`-Block** (nicht als Aktion, siehe unten): Ein
+   `manuell`-Auslöser zählt nur, wenn er wirklich von Hand kam
+   (siehe [Designentscheidungen](#warum-der-kontext-des-zustandswechsels-geprüft-wird)),
+   und bei einer Vollsperre wird der Auslöser gar nicht erst angenommen.
+1. **Einschalten** — nur bei Bewegung, nur wenn es dunkel genug ist, nur für Ziele, die
    gerade aus sind. `light.*`-Ziele bekommen dabei die eingestellte Helligkeit,
    alles andere `homeassistant.turn_on`. Danach Ist-Zustand zurücklesen, für die
    Nachzügler wiederholen, bei endgültigem Fehlschlag melden.
-4. **Warten, bis alle Melder frei melden** (mit Sicherheits-Timeout).
-5. **Nachlaufzeit** — als Wartebedingung, damit ein manuelles Aus sofort abbricht.
-6. **Ausschalten**, sofern noch etwas nicht aus ist und keine Sperre greift — wieder mit
+2. **Warten, bis alle Melder frei melden** (mit Sicherheits-Timeout).
+3. **Nachlaufzeit** — als Wartebedingung, damit ein manuelles Aus sofort abbricht.
+4. **Ausschalten**, sofern noch etwas nicht aus ist und keine Sperre greift — wieder mit
    Zurücklesen, Wiederholung und Meldung.
 
 Jede neue Bewegung startet den Durchlauf neu (`mode: restart`), die Nachlaufzeit beginnt
@@ -126,6 +127,35 @@ der beiden Bedingungen zutrifft. `beides_und` spart am meisten, verzeiht aber ke
 defekten Sensor. Umgesetzt ist das als eine ODER-Verknüpfung aus drei Zweigen (Modus
 `immer`, Sonnen-Zweig, Lux-Zweig), weil die Sonnenbedingung eine echte HA-Condition mit
 `!input`-Offsets ist und nicht in ein Template passt.
+
+### Warum die beiden Torwächter im `conditions`-Block stehen und nicht in `actions`
+
+Das ist keine Stilfrage, sondern der Unterschied zwischen „funktioniert" und „das Licht
+bleibt an". Home Assistant arbeitet einen Auslöser in dieser Reihenfolge ab
+(`automation/__init__.py`, `async_trigger`):
+
+```
+variables rendern  →  conditions prüfen  →  bei false: RETURN
+                                         →  sonst: action_script.async_run()
+```
+
+Erst in `async_run` greift `mode: restart` und bricht einen laufenden Durchlauf ab. Eine
+Prüfung, die als **erste Aktion** formuliert ist, kommt also zu spät: Der wartende
+Durchlauf ist bereits abgeräumt, wenn die Bedingung ihn ablehnt — und mit ihm die
+Ausschaltung. Im `conditions`-Block dagegen wird der Auslöser verworfen, bevor überhaupt
+etwas abgebrochen wird, und der laufende Durchlauf zählt in Ruhe seine Nachlaufzeit
+herunter.
+
+Genau daran ist die erste Fassung gescheitert: Die Automation schaltete das Licht ein, ihr
+eigener Zustandswechsel löste den `manuell`-Trigger aus, `mode: restart` beendete den
+gerade gestarteten Durchlauf, und der neue Durchlauf stieg bei der Auslöser-Prüfung sofort
+wieder aus. Zurück blieb brennendes Licht ohne wartende Automation. Sichtbar wird das im
+Trace als Durchlauf, der nach `Nur echte Auslöser verarbeiten` mit `result: false` endet —
+direkt hinter einem abgebrochenen Durchlauf.
+
+Nebenwirkung, die man kennen sollte: Auch die Vollsperre nimmt jetzt nur noch neue Auslöser
+nicht mehr an. Ein Durchlauf, der schon wartet, läuft weiter — schaltet am Ende aber nicht,
+weil die Sperre kurz vor dem Ausschalten erneut geprüft wird.
 
 ### Warum der Kontext des Zustandswechsels geprüft wird
 
@@ -247,12 +277,16 @@ Reflexion, nicht das Fensterlicht — die Werte fallen deshalb niedriger aus als
 
 ## Validierung
 
-Offline geprüft mit PyYAML und Jinja2 (`validate.py`, 175 Prüfungen): YAML geparst, alle
-25 `!input` in beide Richtungen abgeglichen, 50 Templates gegen simulierte HA-Zustände
+Offline geprüft mit PyYAML und Jinja2 (`validate.py`, 193 Prüfungen): YAML geparst, alle
+25 `!input` in beide Richtungen abgeglichen, 51 Templates gegen simulierte HA-Zustände
 gerendert, dazu Wahrheitstabellen für Auslöser-Erkennung, Lux-Bedingung, die fünf
 Dunkelheits-Modi, Nachtfenster (auch über Mitternacht), Sperren in allen drei Varianten,
 Warte- und Timeout-Bedingungen, Zielaufteilung beim Dimmen sowie Ablaufsimulationen für
 Sofort-Erfolg, Nachzügler im dritten Versuch, toten Aktor und `unavailable`.
+
+Dazu ein Regressionstest für die Selbstauslösung: Er bildet die Reihenfolge aus
+`async_trigger` nach und prüft mit Gegenprobe, dass der Torwächter im `conditions`-Block
+liegt — als erste Aktion ginge der wartende Durchlauf verloren.
 
 Nicht abgedeckt: Home Assistants eigene Config-Validierung (Selektor- und Trigger-Schema)
 und das Laufzeitverhalten von `mode: restart` — dafür ist eine echte Instanz nötig.
