@@ -379,6 +379,10 @@ triggers:
 conditions: []
 
 variables:
+  # ACHTUNG: Variablen auf dieser Ebene rendert Home Assistant zum TRIGGER-Zeitpunkt,
+  # nicht beim Ausführen. Bei "mode: queued" wartet ein zweiter Lauf in der Schlange,
+  # rechnet aber mit dem Zustand von vor der Wartezeit. Hier stehen deshalb nur
+  # statische Eingaben - jede Entscheidung fällt unten in den Aktionen.
   v_quellen: !input zeitquellen
   v_verknuepfung: !input zeitquellen_verknuepfung
   v_aktiv: !input aktiv_schalter
@@ -393,49 +397,6 @@ variables:
 
   ziel_liste: !input ziele
 
-  # Vorbedingung: haben alle Entscheidungs-Eingaben einen brauchbaren Zustand?
-  # Beim HA-Start sind Entitäten kurz "unavailable" - dann darf NICHTS geschaltet
-  # werden, sonst wird "weiß ich nicht" als "aus" missverstanden.
-  eingaben_bekannt: >-
-    {% set quellen = expand(v_quellen) | list %}
-    {% set schalter = expand(v_master) | list + expand(v_aktiv) | list %}
-    {{ quellen | count > 0
-       and quellen | rejectattr('state', 'in', ['on', 'off']) | list | count == 0
-       and schalter | rejectattr('state', 'in', ['on', 'off']) | list | count == 0 }}
-
-  # Ebene 1: sind alle Master-Schalter "on"? (leere Liste = ja)
-  master_ok: >-
-    {{ expand(v_master) | selectattr('state', 'ne', 'on') | list | count == 0 }}
-
-  # Ebene 2: sind alle Betriebsart-Schalter "on"? (leere Liste = ja)
-  uhr_ok: >-
-    {{ expand(v_aktiv) | selectattr('state', 'ne', 'on') | list | count == 0 }}
-
-  # Ebene 3: sagen die Zeitquellen "an"? ODER = eine genügt, UND = alle müssen.
-  quelle_an: >-
-    {% set an = expand(v_quellen) | selectattr('state', 'eq', 'on') | list | count %}
-    {% set alle = expand(v_quellen) | list | count %}
-    {{ an > 0 if v_verknuepfung == 'oder' else (alle > 0 and an == alle) }}
-
-  # Soll-Zustand: 'on', 'off' oder 'egal' (= Automatik ist nicht zuständig).
-  # Unbekannte Zustände zuerst, dann Master, dann Betriebsart, dann die Zeitquellen.
-  soll_zustand: >-
-    {% if not eingaben_bekannt %}egal{% elif not master_ok %}{{ 'off' if v_verhalten_master == 'ausschalten' else 'egal' }}{% elif not uhr_ok %}{{ 'off' if v_verhalten_uhr == 'ausschalten' else 'egal' }}{% else %}{{ 'on' if quelle_an else 'off' }}{% endif %}
-
-  # Auslöser, maschinenlesbar
-  grund: >-
-    {% if not eingaben_bekannt %}unbekannt{% elif not master_ok %}master_aus{% elif not uhr_ok %}zeitschaltuhr_aus{% else %}zeitquelle{% endif %}
-
-  # Auslöser im Klartext, für Meldungen
-  grund_text: >-
-    {% if grund == 'unbekannt' %}Zustand nicht verfügbar{% elif grund == 'master_aus' %}Master-Schalter aus{% elif grund == 'zeitschaltuhr_aus' %}Zeitschaltuhr deaktiviert{% else %}Zeitquelle{% endif %}
-
-  # Ziel-Entitäten, die aktuell nicht im Soll-Zustand sind
-  abweichend: >-
-    {{ expand(ziel_liste)
-       | selectattr('state', 'ne', soll_zustand)
-       | map(attribute='entity_id') | list }}
-
 actions:
   # 1. Zyklische Nachprüfung abgeschaltet? Dann nur echte Ereignisse verarbeiten.
   - alias: Nachprüfung respektieren
@@ -445,17 +406,62 @@ actions:
          or (trigger.id | default('manuell')) != 'sync'
          or v_nachpruefung }}
 
-  # 2. Ist die Automatik überhaupt zuständig? ('egal' = Handbetrieb)
+  # 2. Lagebild ERST JETZT erheben - beim Ausführen, nicht beim Auslösen.
+  #    Wartete dieser Lauf in der Warteschlange, hat der vorherige eventuell schon
+  #    geschaltet; dann muss hier der neue Ist-Zustand herauskommen, nicht der alte.
+  - alias: Soll-Zustand ermitteln
+    variables:
+      # Vorbedingung: haben alle Entscheidungs-Eingaben einen brauchbaren Zustand?
+      # Beim HA-Start sind Entitäten kurz "unavailable" - dann darf NICHTS geschaltet
+      # werden, sonst wird "weiß ich nicht" als "aus" missverstanden.
+      eingaben_bekannt: >-
+        {% set quellen = expand(v_quellen) | list %}
+        {% set schalter = expand(v_master) | list + expand(v_aktiv) | list %}
+        {{ quellen | count > 0
+           and quellen | rejectattr('state', 'in', ['on', 'off']) | list | count == 0
+           and schalter | rejectattr('state', 'in', ['on', 'off']) | list | count == 0 }}
+
+      # Ebene 1: sind alle Master-Schalter "on"? (leere Liste = ja)
+      master_ok: >-
+        {{ expand(v_master) | selectattr('state', 'ne', 'on') | list | count == 0 }}
+
+      # Ebene 2: sind alle Betriebsart-Schalter "on"? (leere Liste = ja)
+      uhr_ok: >-
+        {{ expand(v_aktiv) | selectattr('state', 'ne', 'on') | list | count == 0 }}
+
+      # Ebene 3: sagen die Zeitquellen "an"? ODER = eine genügt, UND = alle müssen.
+      quelle_an: >-
+        {% set an = expand(v_quellen) | selectattr('state', 'eq', 'on') | list | count %}
+        {% set alle = expand(v_quellen) | list | count %}
+        {{ an > 0 if v_verknuepfung == 'oder' else (alle > 0 and an == alle) }}
+
+      # Soll-Zustand: 'on', 'off' oder 'egal' (= Automatik ist nicht zuständig).
+      # Unbekannte Zustände zuerst, dann Master, dann Betriebsart, dann die Zeitquellen.
+      soll_zustand: >-
+        {% if not eingaben_bekannt %}egal{% elif not master_ok %}{{ 'off' if v_verhalten_master == 'ausschalten' else 'egal' }}{% elif not uhr_ok %}{{ 'off' if v_verhalten_uhr == 'ausschalten' else 'egal' }}{% else %}{{ 'on' if quelle_an else 'off' }}{% endif %}
+
+      # Auslöser, maschinenlesbar
+      grund: >-
+        {% if not eingaben_bekannt %}unbekannt{% elif not master_ok %}master_aus{% elif not uhr_ok %}zeitschaltuhr_aus{% else %}zeitquelle{% endif %}
+
+      # Auslöser im Klartext, für Meldungen
+      grund_text: >-
+        {% if grund == 'unbekannt' %}Zustand nicht verfügbar{% elif grund == 'master_aus' %}Master-Schalter aus{% elif grund == 'zeitschaltuhr_aus' %}Zeitschaltuhr deaktiviert{% else %}Zeitquelle{% endif %}
+
+  # 3. Ist die Automatik überhaupt zuständig? ('egal' = Handbetrieb)
   - alias: Nur handeln, wenn ein Soll-Zustand definiert ist
     condition: template
     value_template: "{{ soll_zustand in ['on', 'off'] }}"
 
-  # 3. Stimmt der Ist-Zustand schon? Dann fertig – verhindert Meldungs-Spam.
+  # 4. Stimmt der Ist-Zustand schon? Dann fertig - verhindert Meldungs-Spam und
+  #    fängt den Fall ab, dass ein vorheriger Lauf die Arbeit bereits erledigt hat.
   - alias: Nur handeln, wenn Soll und Ist abweichen
     condition: template
-    value_template: "{{ abweichend | count > 0 }}"
+    value_template: >-
+      {{ expand(ziel_liste) | selectattr('state', 'ne', soll_zustand)
+           | list | count > 0 }}
 
-  # 4. Schalten, warten, nachprüfen – und nur die Nachzügler erneut anstoßen.
+  # 5. Schalten, warten, nachprüfen – und nur die Nachzügler erneut anstoßen.
   - alias: Schalten mit Wiederholung
     repeat:
       sequence:
@@ -478,7 +484,7 @@ actions:
                  | list | count == 0
                or repeat.index >= v_max_versuche }}
 
-  # 5. Ergebnis auswerten
+  # 6. Ergebnis auswerten
   - variables:
       restliche: >-
         {{ expand(ziel_liste)
@@ -488,11 +494,11 @@ actions:
         {{ expand(ziel_liste)
            | selectattr('state', 'ne', soll_zustand) | list | count == 0 }}
 
-  # 6. Push an die ausgewählten Geräte. Leere Liste = keine Runde, kein Versand.
+  # 7. Push an die ausgewählten Geräte. Leere Liste = keine Runde, kein Versand.
   - variables:
       push_ziele: "{{ v_push_erfolg if erfolg else v_push_fehler }}"
       push_text: >-
-        {% if erfolg %}{{ grund_text }}: auf '{{ soll_zustand }}' geschaltet ({{ versuche }} Versuch(e)){% else %}{{ grund_text }}: konnte nach {{ versuche }} Versuch(en) nicht auf '{{ soll_zustand }}' schalten – {{ restliche | join(', ') }}{% endif %}
+        {% set n = versuche | int(1) %}{% set s = 'Schaltversuch' if n == 1 else 'Schaltversuchen' %}{% if erfolg %}{{ grund_text }}: auf '{{ soll_zustand }}' geschaltet – nach {{ n }} {{ s }}{% else %}{{ grund_text }}: konnte nach {{ n }} {{ s }} nicht auf '{{ soll_zustand }}' schalten – {{ restliche | join(', ') }}{% endif %}
       push_extra: >-
         {{ {'push': {'sound': {'name': 'default', 'critical': 1, 'volume': 1.0}}}
            if (not erfolg and v_push_kritisch) else {} }}
@@ -511,7 +517,7 @@ actions:
             message: "{{ push_text }}"
             data: "{{ push_extra }}"
 
-  # 7. Zusaetzliche frei definierte Aktionen
+  # 8. Zusaetzliche frei definierte Aktionen
   - alias: Zusatzaktion bei Erfolg oder Fehlschlag
     if:
       - condition: template

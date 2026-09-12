@@ -141,7 +141,7 @@ Telegram, was auch immer. Nutzbare Variablen:
 | `grund_text` | Dasselbe im Klartext, z. B. `Master-Schalter aus` |
 | `ziel_liste` | Alle konfigurierten Ziel-Entitäten |
 | `restliche` | Entitäten, die den Soll-Zustand **nicht** erreicht haben |
-| `versuche` | Anzahl der Schaltversuche |
+| `versuche` | Anzahl der Schaltversuche innerhalb **dieses** Laufs (1 = sofort geklappt) |
 
 Die vorgegebenen Aktionen sind Platzhalter: „Aktivität protokollieren" (`logbook.log`)
 schreibt nur ins HA-Logbuch, „Anhaltende Benachrichtigung erstellen"
@@ -151,41 +151,117 @@ kann sie löschen.
 
 ## Rezepte für Zeitquellen
 
-Alles über Einstellungen → Geräte & Dienste → **Helfer** → *Template* →
-*Template-Binärsensor*. Vorher im Template-Editor unter Entwicklerwerkzeuge live testen.
+Alles über Einstellungen → Geräte & Dienste → **Helfer** → *+ Helfer anlegen* →
+*Template* → *Template für einen Binärsensor*. Das Template vorher unter
+Entwicklerwerkzeuge → *Vorlagen* einfügen und live prüfen – dort steht sofort
+`True` oder `False`.
 
-**Sonnenuntergang bis Sonnenaufgang, aber nur zu zivilen Zeiten** – der Klassiker für
-Außenbeleuchtung und den Weihnachtsbaum:
+### Die Regel: jede Sonnen-Bedingung braucht eine Tageshälften-Klammer
+
+`elevation < x` heißt „es ist dunkel" – und das gilt **abends wie morgens**. Ohne
+Einschränkung auf eine Tageshälfte wird das Fenster stillschweigend größer als gedacht,
+und zwar an dem Ende, an dem man gerade nicht hinschaut.
+
+| Kante | Klammer |
+|---|---|
+| Abend | `today_at('12:00') <= now()` |
+| Morgen | `now() < today_at('12:00')` |
+
+Weglassen darf man sie nur, wenn man wirklich die **ganze** Dunkelphase will.
+
+### Die fünf Muster
+
+| An | Aus | Zustandstemplate |
+|---|---|---|
+| Uhrzeit | Uhrzeit | kein Template – `schedule.*`-Helfer nehmen |
+| Uhrzeit abends | Sonnenaufgang | `{{ now() >= today_at('23:00') or (now() < today_at('12:00') and state_attr('sun.sun','elevation') < 0) }}` |
+| Sonnenuntergang | Uhrzeit abends | `{{ today_at('12:00') <= now() < today_at('23:00') and state_attr('sun.sun','elevation') < -2 }}` |
+| Sonnenuntergang | Sonnenaufgang | `{{ state_attr('sun.sun','elevation') < -2 }}` |
+| Uhrzeit morgens | Sonnenaufgang | `{{ today_at('06:00') <= now() < today_at('12:00') and state_attr('sun.sun','elevation') < 0 }}` |
+
+Nur das zweite Muster ist ein **ODER** – es läuft über Mitternacht, und die beiden
+Tageshälften müssen getrennt beschrieben werden. Alle anderen sind UND-Verknüpfungen
+innerhalb eines Tages.
+
+Beim letzten Muster ist zu bedenken, dass es im Sommer **gar nicht** schaltet: geht die
+Sonne vor 06:00 auf, ist das Fenster leer. Das ist richtig so, überrascht aber, wenn man
+es nicht erwartet.
+
+### Der Fall über Mitternacht, ausgeschrieben
+
+„An um 23:00, aus bei Sonnenaufgang" – das gängige Muster für Außenbeleuchtung, die
+nicht die halbe Nacht brennen soll:
 
 ```jinja
-{% set dunkel = state_attr('sun.sun', 'elevation') < -2 %}
-{{ dunkel and today_at('06:00') <= now() < today_at('23:00') }}
+{{ now() >= today_at('23:00')
+   or (now() < today_at('12:00') and state_attr('sun.sun', 'elevation') < 0) }}
 ```
 
-An von 06:00 bis Sonnenaufgang und von Sonnenuntergang bis 23:00; nach Mitternacht aus.
-Die Zeitklammer trennt Morgen und Abend – ohne sie würde der Sensor die ganze Nacht
-durchlaufen. `-2` ist der Feinregler: `0` ist der Sonnenuntergang selbst, `-6` das Ende
-der bürgerlichen Dämmerung, also merklich später.
+Nachgerechnet für Aachen (50,78° N):
 
-**Nur abends:**
+| Tag | An | Aus |
+|---|---|---|
+| 09.09. | 23:00 | 07:06 |
+| 21.12. | 23:00 | 08:42 |
+| 21.06. | 23:00 | 05:29 |
+
+> **Falle:** Ohne die Morgen-Klammer sieht die Formel richtig aus, ist es aber nicht:
+>
+> ```jinja
+> {{ now() >= today_at('23:00') or state_attr('sun.sun','elevation') < 0 }}
+> ```
+>
+> Der Sonnen-Zweig ist schon ab Sonnenuntergang wahr, also **schaltet der Sensor um
+> 20:00 statt um 23:00** ein (21.12.: 16:26, 21.06.: 21:46) – und die eingestellte
+> Uhrzeit ist wirkungslos, solange sie nach dem Sonnenuntergang liegt. Im Sommer fällt
+> das nicht auf, im Winter sofort.
+
+### Die Schwelle als Feinregler
+
+`elevation` ist ein Winkel: `0` ist der geometrische Sonnenauf- bzw. -untergang, negative
+Werte liegen in der Dämmerung. Wirkung am **Morgen-Ende** (aus bei Sonnenaufgang):
+
+| Schwelle | Aus am 21.12. | Aus am 21.06. | |
+|---:|---|---|---|
+| `-6` | 07:56 | 04:36 | Ende der bürgerlichen Dämmerung, noch dunkel |
+| `-2` | 08:26 | 05:12 | kurz vor Sonnenaufgang |
+| **`0`** | **08:42** | **05:29** | **exakt Sonnenaufgang** |
+| `2` | 08:59 | 05:45 | kurz danach |
+| `5` | 09:26 | 06:08 | deutlich danach |
+
+Die Schwelle wirkt an beiden Tagesenden **gegenläufig**: ein tieferer Wert heißt abends
+später an, morgens aber früher aus. Für „an bei Sonnenuntergang" sind `-2` bis `-6`
+sinnvoll, für „aus bei Sonnenaufgang" eher `0`.
+
+### Weitere Quellen
+
+**Morgens und abends in einem Sensor** – der Klassiker für den Weihnachtsbaum:
 
 ```jinja
-{% set dunkel = state_attr('sun.sun', 'elevation') < -2 %}
-{{ dunkel and today_at('12:00') <= now() < today_at('23:00') }}
+{% set e = state_attr('sun.sun', 'elevation') %}
+{{ (today_at('06:00') <= now() < today_at('12:00') and e < 0)
+   or (today_at('12:00') <= now() < today_at('23:00') and e < -2) }}
 ```
 
-**Anwesenheit** (als zweite Quelle mit UND zu verknüpfen):
+Zwei Klammern, zwei Schwellen: morgens aus bei Sonnenaufgang, abends an in der Dämmerung.
+
+**Anwesenheit** (als zweite Quelle mit UND zu verknüpfen, weil `person.*` selbst
+`home`/`not_home` ist und nie `on`):
 
 ```jinja
 {{ is_state('person.torsten', 'home') or is_state('person.partner', 'home') }}
 ```
 
-Diese Sensoren aktualisieren sich von allein: `elevation` ändert sich laufend, und
-Templates mit `now()` rechnet Home Assistant jede Minute neu.
-
 **Ohne Template geht auch:** zwei `schedule.*`-Helfer mit ODER für „vormittags und
 abends", oder ein `schedule.*` mit UND zu einem `binary_sensor` für „im Zeitfenster und
 nur wenn jemand da ist".
+
+### Aktualisierung
+
+Diese Sensoren rechnen sich von allein neu: `elevation` ändert sich laufend, und
+Templates, die `now()` enthalten, wertet Home Assistant jede Minute neu aus. Zusätzlich
+prüft der Blueprint im eingestellten Intervall nach – ein verpasster Moment wird also
+spätestens dort aufgefangen.
 
 ## Beispielkonfiguration: Poolsteuerung
 
@@ -249,6 +325,18 @@ angeht, und meldet, wenn die Steckdose im Garten gar nicht mehr reagiert.
   Erfolgsmeldungen im Minutentakt produzieren.
 - **Master vor Betriebsart.** Ist beides aus, gilt das Master-Verhalten. „Stecker gezogen"
   schlägt „Betriebsart".
+- **Die Entscheidung fällt beim Ausführen, nicht beim Auslösen.** Variablen auf
+  Automations-Ebene rendert Home Assistant im Moment des Triggers – *bevor* ein Lauf bei
+  `mode: queued` in die Warteschlange geht. Ein zweiter Lauf würde also mit dem Zustand
+  von vor seiner Wartezeit rechnen. Deshalb stehen dort nur die statischen `!input`-Werte;
+  Soll-Zustand, Grund und der Soll-Ist-Vergleich werden als **Aktionsschritt** ermittelt.
+
+  Ohne das passiert Folgendes: Fällt ein Schaltzeitpunkt mit einem `sync`-Tick zusammen –
+  bei einem 5-Minuten-Intervall also zu jeder vollen Viertelstunde, halben Stunde und
+  Stunde – feuern zwei Trigger in derselben Sekunde. Beide erheben ihr Lagebild, solange
+  die Last noch im alten Zustand ist, beide halten sich für zuständig. Der erste schaltet,
+  der zweite läuft mit leerer Zielliste durch und meldet trotzdem Erfolg. Ergebnis: **ein
+  Schaltvorgang, zwei Erfolgsmeldungen**, beide mit „1 Schaltversuch".
 - **Zeitquelle als Zustand, nicht als Trigger.** Nur so kann der Blueprint nach einem
   Neustart nachholen, was er verpasst hat. Ein eingebauter Sonnen-Modus hätte die
   Zustandsmatrix vervielfacht; delegiert an einen Template-Helfer bleibt der Blueprint
