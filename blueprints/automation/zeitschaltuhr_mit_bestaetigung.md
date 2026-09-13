@@ -105,6 +105,7 @@ Soll = Zeitquellen, ODER/UND-verknüpft (on / off)
 | **Push bei Erfolg an diese Geräte** | nein | – | Geräte mit HA-App, die bei erfolgreichem Schalten einen Push erhalten. Leer = kein Push. |
 | **Push bei Fehlschlag an diese Geräte** | nein | – | Dasselbe für den Fehlerfall. Leer = kein Push. |
 | **Titel der Push-Benachrichtigung** | nein | `Zeitschaltuhr` | Überschrift der Meldung |
+| **Fehlermeldungen bei der zyklischen Nachprüfung** | nein | unterdrücken | Verhindert, dass ein totes Gerät alle paar Minuten meldet |
 | **Fehlschlag als kritische Benachrichtigung** | nein | aus | Push kommt auch bei stummem Telefon durch |
 | **Aktion bei Erfolg** | nein | Logbuch-Eintrag | Zusätzliche Aktion über den Push hinaus |
 | **Aktion bei Fehlschlag** | nein | Persistente Benachrichtigung | Zusätzliche Aktion über den Push hinaus |
@@ -140,7 +141,8 @@ Telegram, was auch immer. Nutzbare Variablen:
 | `grund` | `zeitquelle`, `master_aus`, `zeitschaltuhr_aus` oder `unbekannt` |
 | `grund_text` | Dasselbe im Klartext, z. B. `Master-Schalter aus` |
 | `ziel_liste` | Alle konfigurierten Ziel-Entitäten |
-| `restliche` | Entitäten, die den Soll-Zustand **nicht** erreicht haben |
+| `restliche` | Erreichbare Entitäten, die den Soll-Zustand **nicht** erreicht haben |
+| `nicht_erreichbar` | Entitäten ohne `on`/`off`-Zustand – offline, abgesteckt, Integration weg |
 | `versuche` | Anzahl der Schaltversuche innerhalb **dieses** Laufs (1 = sofort geklappt) |
 
 Die vorgegebenen Aktionen sind Platzhalter: „Aktivität protokollieren" (`logbook.log`)
@@ -293,6 +295,7 @@ Kein Handbetrieb, kein Master – nur Zeitquelle und Ziel:
 | Zu schaltende Entitäten | `switch.tannenbaum_aussen` |
 | Push bei Fehlschlag | eigenes Handy |
 | Push bei Erfolg | *leer* – zweimal täglich eine Meldung will man nicht |
+| Fehlermeldungen bei der Nachprüfung | unterdrücken – die Steckdose im Garten fällt im Winter öfter aus |
 
 Die Nachprüfung sorgt dafür, dass die Lichterkette auch nach einem WLAN-Aussetzer
 angeht, und meldet, wenn die Steckdose im Garten gar nicht mehr reagiert.
@@ -325,6 +328,23 @@ angeht, und meldet, wenn die Steckdose im Garten gar nicht mehr reagiert.
   Erfolgsmeldungen im Minutentakt produzieren.
 - **Master vor Betriebsart.** Ist beides aus, gilt das Master-Verhalten. „Stecker gezogen"
   schlägt „Betriebsart".
+- **„Reagiert nicht" und „ist nicht da" sind zwei Fehler.** Ein Ziel mit Zustand
+  `unavailable` oder `unknown` lässt sich nicht schalten – es wiederholt anzufunken kostet
+  nur Zeit und sagt nichts Neues. Solche Ziele landen in `nicht_erreichbar`, werden von der
+  Retry-Schleife übersprungen und getrennt gemeldet. Das führt auch zu einer anderen
+  Handlung: „reagiert nicht" heißt Aktor prüfen, „nicht erreichbar" heißt Funkstrecke oder
+  Integration prüfen.
+- **`while` statt `until` in der Schleife.** `until` prüft erst *nach* dem Durchgang, würde
+  also selbst dann einen Leerbefehl absetzen und die Wartezeit verbrauchen, wenn es nichts
+  zu schalten gibt. Bei einem toten Gerät waren das 50 Sekunden Leerlauf pro Durchlauf.
+  `while` prüft vorher – die Schleife läuft dann null Mal.
+- **Fehlermeldungen kennen den Auslöser.** Eine Störung, die bestehen bleibt, würde bei
+  jedem Nachprüf-Tick erneut melden. Standardmäßig melden deshalb nur Läufe, die von einem
+  echten Ereignis kommen – Schaltzeitpunkt, Schalter, Neustart. **Korrigiert** wird
+  weiterhin bei jedem Durchlauf, und **Erfolgsmeldungen** gehen immer raus: die kommt genau
+  einmal, wenn es endlich geklappt hat.
+- **Ein Notification-Tag pro Automation.** Neue Meldungen ersetzen die vorige, statt das
+  Mitteilungszentrum zu füllen.
 - **Die Entscheidung fällt beim Ausführen, nicht beim Auslösen.** Variablen auf
   Automations-Ebene rendert Home Assistant im Moment des Triggers – *bevor* ein Lauf bei
   `mode: queued` in die Warteschlange geht. Ein zweiter Lauf würde also mit dem Zustand
@@ -356,8 +376,9 @@ angeht, und meldet, wenn die Steckdose im Garten gar nicht mehr reagiert.
   Betriebsart ausschalten, dann von Hand schalten.**
 - Stille kann drei Dinge bedeuten: Automatik nicht zuständig, Zustand stimmte schon, oder
   die Automation lief nicht. Unterscheiden lässt sich das nur über die Traces.
-- `unavailable`-Ziele gelten als Abweichung, werden bis zum Versuchslimit angestoßen und
-  danach als Fehler gemeldet. Das ist beabsichtigt.
+- Ein dauerhaft nicht erreichbares Ziel wird **einmal** gemeldet – beim nächsten echten
+  Ereignis. Bleibt es weg, bleibt es still. Wer stattdessen eine Dauererinnerung möchte,
+  stellt *Fehlermeldungen bei der zyklischen Nachprüfung* auf „Auch bei jedem Durchlauf".
 - Nach einem HA-Neustart kann es bis zum nächsten Nachprüf-Intervall dauern, bis
   korrigiert wird – der `homeassistant.start`-Trigger läuft ins Leere, solange die
   Zeitquellen noch `unavailable` sind. Mit dem Default von 5 Minuten unkritisch.

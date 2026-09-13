@@ -283,6 +283,28 @@ blueprint:
           selector:
             text:
 
+        fehler_melden:
+          name: Fehlermeldungen bei der zyklischen Nachprüfung
+          description: >-
+            Ein dauerhaft nicht erreichbares Gerät – abgestecktes Zwischenstecker-Relais,
+            zigbee2mqtt gestoppt – erzeugt sonst bei jedem Nachprüf-Durchlauf eine neue
+            Meldung, im Standardintervall also alle 5 Minuten.
+
+
+            „Unterdrücken" meldet nur, wenn ein echtes Ereignis der Auslöser war:
+            Schaltzeitpunkt, Schalter oder Neustart. Korrigiert wird weiterhin bei jedem
+            Durchlauf, und **Erfolgsmeldungen sind nicht betroffen** – die kommen auch aus
+            der Nachprüfung heraus, also genau dann, wenn es endlich geklappt hat.
+          default: ereignisse
+          selector:
+            select:
+              mode: list
+              options:
+                - label: "Unterdrücken – nur bei Schaltzeitpunkt, Schalter oder Neustart"
+                  value: ereignisse
+                - label: "Auch bei jedem Nachprüf-Durchlauf melden"
+                  value: immer
+
         push_kritisch:
           name: Fehlschlag als kritische Benachrichtigung
           description: >-
@@ -394,6 +416,7 @@ variables:
   v_push_erfolg: !input push_geraete_erfolg
   v_push_fehler: !input push_geraete_fehler
   v_push_kritisch: !input push_kritisch
+  v_fehler_melden: !input fehler_melden
 
   ziel_liste: !input ziele
 
@@ -444,6 +467,16 @@ actions:
       grund: >-
         {% if not eingaben_bekannt %}unbekannt{% elif not master_ok %}master_aus{% elif not uhr_ok %}zeitschaltuhr_aus{% else %}zeitquelle{% endif %}
 
+      # Zählt die Schaltversuche. Vorgabe 0, falls die Schleife gar nicht erst anläuft
+      # (etwa weil alle Ziele unerreichbar sind).
+      versuche: 0
+
+      # Darf dieser Lauf Fehler melden? Nachprüf-Ticks schweigen auf Wunsch.
+      melden_erlaubt: >-
+        {{ v_fehler_melden == 'immer'
+           or trigger is not defined
+           or (trigger.id | default('manuell')) != 'sync' }}
+
       # Auslöser im Klartext, für Meldungen
       grund_text: >-
         {% if grund == 'unbekannt' %}Zustand nicht verfügbar{% elif grund == 'master_aus' %}Master-Schalter aus{% elif grund == 'zeitschaltuhr_aus' %}Zeitschaltuhr deaktiviert{% else %}Zeitquelle{% endif %}
@@ -453,15 +486,25 @@ actions:
     condition: template
     value_template: "{{ soll_zustand in ['on', 'off'] }}"
 
-  # 4. Stimmt der Ist-Zustand schon? Dann fertig - verhindert Meldungs-Spam und
-  #    fängt den Fall ab, dass ein vorheriger Lauf die Arbeit bereits erledigt hat.
-  - alias: Nur handeln, wenn Soll und Ist abweichen
+  # 4. Gibt es etwas zu tun oder zu melden? Fängt zugleich den Fall ab, dass ein
+  #    vorheriger Lauf die Arbeit schon erledigt hat.
+  #
+  #    WICHTIG: "nicht im Soll" und "nicht erreichbar" sind zwei verschiedene Dinge.
+  #    Ein Gerät mit Zustand 'unavailable' laesst sich nicht schalten - es wiederholt
+  #    anzufunken kostet nur Zeit. Es wird deshalb getrennt gezählt und getrennt gemeldet.
+  - alias: Nur handeln, wenn es etwas zu schalten oder zu melden gibt
     condition: template
     value_template: >-
-      {{ expand(ziel_liste) | selectattr('state', 'ne', soll_zustand)
-           | list | count > 0 }}
+      {% set schaltbar = expand(ziel_liste)
+           | selectattr('state', 'in', ['on', 'off'])
+           | selectattr('state', 'ne', soll_zustand) | list | count %}
+      {% set weg = expand(ziel_liste)
+           | rejectattr('state', 'in', ['on', 'off']) | list | count %}
+      {{ schaltbar > 0 or (weg > 0 and melden_erlaubt) }}
 
   # 5. Schalten, warten, nachprüfen – und nur die Nachzügler erneut anstoßen.
+  #    "while" statt "until": die Bedingung wird VOR jedem Durchgang geprüft. Gibt es
+  #    nichts Schaltbares, läuft die Schleife null Mal - kein Leerbefehl, keine Wartezeit.
   - alias: Schalten mit Wiederholung
     repeat:
       sequence:
@@ -473,35 +516,45 @@ actions:
           target:
             entity_id: >-
               {{ expand(ziel_liste)
+                 | selectattr('state', 'in', ['on', 'off'])
                  | selectattr('state', 'ne', soll_zustand)
                  | map(attribute='entity_id') | list }}
         - delay:
             seconds: !input pruefung_verzoegerung
-      until:
+      while:
         - condition: template
           value_template: >-
-            {{ expand(ziel_liste) | selectattr('state', 'ne', soll_zustand)
-                 | list | count == 0
-               or repeat.index >= v_max_versuche }}
+            {{ expand(ziel_liste)
+                 | selectattr('state', 'in', ['on', 'off'])
+                 | selectattr('state', 'ne', soll_zustand) | list | count > 0
+               and repeat.index <= v_max_versuche }}
 
-  # 6. Ergebnis auswerten
+  # 6. Ergebnis auswerten - getrennt nach "reagiert nicht" und "gar nicht da"
   - variables:
       restliche: >-
         {{ expand(ziel_liste)
-           | selectattr('state', 'ne', soll_zustand)
-           | map(attribute='entity_id') | list }}
-      erfolg: >-
+                 | selectattr('state', 'in', ['on', 'off'])
+                 | selectattr('state', 'ne', soll_zustand)
+                 | map(attribute='entity_id') | list }}
+      nicht_erreichbar: >-
         {{ expand(ziel_liste)
-           | selectattr('state', 'ne', soll_zustand) | list | count == 0 }}
+                 | rejectattr('state', 'in', ['on', 'off'])
+                 | map(attribute='entity_id') | list }}
+      erfolg: >-
+        {{ restliche | count == 0 and nicht_erreichbar | count == 0 }}
 
   # 7. Push an die ausgewählten Geräte. Leere Liste = keine Runde, kein Versand.
   - variables:
-      push_ziele: "{{ v_push_erfolg if erfolg else v_push_fehler }}"
+      # Erfolg geht immer raus. Fehler nur, wenn dieser Lauf melden darf.
+      push_ziele: >-
+        {% if erfolg %}{{ v_push_erfolg }}{% elif melden_erlaubt %}{{ v_push_fehler }}{% else %}{{ [] }}{% endif %}
       push_text: >-
-        {% set n = versuche | int(1) %}{% set s = 'Schaltversuch' if n == 1 else 'Schaltversuchen' %}{% if erfolg %}{{ grund_text }}: auf '{{ soll_zustand }}' geschaltet – nach {{ n }} {{ s }}{% else %}{{ grund_text }}: konnte nach {{ n }} {{ s }} nicht auf '{{ soll_zustand }}' schalten – {{ restliche | join(', ') }}{% endif %}
+        {% set n = versuche | int(0) %}{% set s = 'Schaltversuch' if n == 1 else 'Schaltversuchen' %}{% if erfolg %}{{ grund_text }}: auf '{{ soll_zustand }}' geschaltet – nach {{ n }} {{ s }}{% else %}{{ grund_text }}: {% if restliche | count > 0 %}{{ restliche | join(', ') }} reagiert nicht auf '{{ soll_zustand }}' (nach {{ n }} {{ s }}){% if nicht_erreichbar | count > 0 %}; {% endif %}{% endif %}{% if nicht_erreichbar | count > 0 %}nicht erreichbar: {{ nicht_erreichbar | join(', ') }}{% endif %}{% endif %}
+      # Gleicher Tag pro Automation: eine neue Meldung ersetzt die vorige,
+      # statt eine weitere Zeile im Mitteilungszentrum anzulegen.
+      push_tag: "zeitschaltuhr_{{ ziel_liste | join('_') | slugify }}"
       push_extra: >-
-        {{ {'push': {'sound': {'name': 'default', 'critical': 1, 'volume': 1.0}}}
-           if (not erfolg and v_push_kritisch) else {} }}
+        {% if not erfolg and v_push_kritisch %}{{ {'tag': push_tag, 'push': {'sound': {'name': 'default', 'critical': 1, 'volume': 1.0}}} }}{% else %}{{ {'tag': push_tag} }}{% endif %}
 
   - alias: Push-Benachrichtigung senden
     repeat:
