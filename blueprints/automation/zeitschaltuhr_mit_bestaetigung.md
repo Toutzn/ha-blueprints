@@ -22,7 +22,62 @@ im Schaltmoment neu gestartet – bleibt die Last unbemerkt an. Dieser Blueprint
 Ist-Zustand nach dem Schalten zurück, wiederholt gezielt für die Entitäten, die nicht
 reagiert haben, und meldet erst dann Erfolg oder Fehlschlag.
 
+## Das eingebaute Zeitfenster
+
+Für den häufigsten Fall – Sonnenuntergang, Sonnenaufgang, feste Uhrzeiten – braucht es
+**keinen Helfer und kein Template**. Beginn und Ende werden direkt in der Automation
+eingestellt:
+
+| Feld | Auswahl |
+|---|---|
+| **Einschalten ab** | Kein Fenster · Sonnenuntergang · Feste Uhrzeit |
+| **Ausschalten ab** | Kein Fenster · Sonnenaufgang · Feste Uhrzeit |
+
+Alle Kombinationen sind erlaubt, auch über Mitternacht hinweg:
+
+| Gewünscht | Einstellung |
+|---|---|
+| Außenlicht die ganze Nacht | Sonnenuntergang → Sonnenaufgang |
+| Weihnachtsbeleuchtung bis 01:00 | Sonnenuntergang → Feste Uhrzeit `01:00` |
+| Spätes Licht bis zum Morgen | Feste Uhrzeit `23:00` → Sonnenaufgang |
+| Nur nachts bedienbar (mit *nur ausschalten*) | Sonnenuntergang → Sonnenaufgang |
+| Reines Uhrzeitfenster | Feste Uhrzeit → Feste Uhrzeit |
+
+**Beide Felder müssen gesetzt sein.** Steht eines auf „Kein Fenster", gilt das Fenster als
+nicht konfiguriert und es zählen nur die Zeitquellen unten. Das ist auch die Vorgabe –
+bestehende Automationen ändern sich durch das Fenster also nicht.
+
+### Die Dämmerungsschwelle
+
+Sonnenuntergang und Sonnenaufgang werden über die **Sonnenhöhe** bestimmt, nicht über eine
+Uhrzeit – so wandert die Schaltzeit über das Jahr korrekt mit. Die Schwelle ist der
+Feinregler; nachgerechnet für Aachen (50,78° N):
+
+| Schwelle | Ein am 21.12. | Aus am 21.12. | |
+|---:|---|---|---|
+| `0` | 16:26 | 08:42 | geometrischer Sonnenauf-/-untergang |
+| **`-2`** | **16:42** | **08:27** | **kurz danach – die Vorgabe** |
+| `-6` | 17:12 | 07:56 | Ende der bürgerlichen Dämmerung, deutlich dunkel |
+
+Ein Minuten-Offset auf „Sonnenuntergang" gibt es bewusst nicht: 30 Minuten sind im Juni
+eine andere Helligkeit als im Dezember, ein Grad Sonnenhöhe ist das ganze Jahr über
+dieselbe. Wer es lieber in Minuten denkt, liest die Umrechnung aus der Tabelle ab.
+
+### Zusammenspiel mit den Zeitquellen
+
+Das Fenster zählt wie **eine weitere Zeitquelle**: bei *ODER* genügt es allein, bei *UND*
+muss es zusammen mit allen anderen Quellen `on` sein. So lässt sich etwa „nur bei
+Dunkelheit **und** wenn jemand zu Hause ist" ohne ein einziges Template bauen – Fenster
+plus Anwesenheits-Binärsensor als Quelle, Verknüpfung UND.
+
+Mehr als ein eingebautes Fenster pro Automation gibt es nicht. Wer zwei Fenster braucht
+(morgens und abends), nimmt dafür einen `schedule.*`-Helfer als zusätzliche Quelle oder
+legt eine zweite Automation an.
+
 ## Zeitquellen: Zustand, nicht Ereignis
+
+Zeitquellen sind jetzt **optional** – für alles, was das eingebaute Fenster nicht abdeckt:
+Wochentage, mehrere Blöcke pro Tag, Anwesenheit, Kalender, eigene Bedingungen.
 
 Die Zeitquelle ist **jede Entität mit `on`/`off`** – ein `schedule.*`-Helfer, ein
 Template-Binärsensor, eine Kalender-Entität, eine Gruppe. Mehrere Quellen lassen sich
@@ -35,7 +90,8 @@ weiß niemand mehr, dass die Last an sein sollte. Ein Zustand lässt sich jederz
 befragen, ein Ereignis nicht.
 
 Deshalb passen diese Entitäten **nicht** direkt als Quelle, weil ihr Zustand nicht
-`on`/`off` ist – ein Template-Binärsensor davor löst das (Rezepte unten):
+`on`/`off` ist – ein Template-Binärsensor davor löst das (Rezepte unten). Für `sun.sun`
+ist das seit dem eingebauten Fenster nicht mehr nötig:
 
 | Entität | Zustand |
 |---|---|
@@ -89,7 +145,7 @@ die Option meist überflüssig – deshalb ist sie aus.
 ## Ablauf
 
 ```
-Trigger (Zeitquelle / Schalter / Ziel / Neustart / zyklisch)
+Trigger (Fensterkante / Zeitquelle / Schalter / Ziel / Neustart / zyklisch)
         ▼
 alle Entscheidungs-Eingaben mit brauchbarem Zustand ?
         │                  ──nein──▶  ENDE, keine Meldung
@@ -103,7 +159,7 @@ Zeitschaltuhr aktiv on ?   ──nein──▶  Verhalten bei Zeitschaltuhr aus
         │                             (Handbetrieb oder Zwangs-Aus)
         ja
         ▼
-Soll = Zeitquellen, ODER/UND-verknüpft (on / off)
+Soll = Fenster + Zeitquellen, ODER/UND-verknüpft (on / off)
         │                             durch die Schaltrichtung ggf. auf
         │                             „egal" gesetzt (Sperre)
         └──────────┬─────────────────  Handbetrieb ▶ ENDE, keine Meldung
@@ -125,9 +181,14 @@ Soll = Zeitquellen, ODER/UND-verknüpft (on / off)
 
 | Feld | Pflicht | Default | Beschreibung |
 |---|---|---|---|
-| **Zeitquellen** | ja | – | Eine oder mehrere Entitäten mit `on`/`off`, die den Soll-Zustand vorgeben |
+| **Zeitquellen** | nein | – | Eine oder mehrere Entitäten mit `on`/`off`, die den Soll-Zustand vorgeben. Leer, wenn das eingebaute Fenster genügt. |
 | **Verknüpfung mehrerer Zeitquellen** | nein | ODER | *ODER* = eine `on` genügt · *UND* = alle müssen `on` sein |
 | **Schaltrichtung** | nein | Beides | *Beides* · *Nur ausschalten* (Sperre) · *Nur einschalten*. Betrifft nur die Zeitquellen. |
+| **Einschalten ab** | nein | Kein Fenster | Beginn des eingebauten Fensters: *Kein Fenster* · *Sonnenuntergang* · *Feste Uhrzeit* |
+| **Uhrzeit für den Beginn** | nein | 23:00 | Nur wirksam bei „Feste Uhrzeit" |
+| **Ausschalten ab** | nein | Kein Fenster | Ende des Fensters: *Kein Fenster* · *Sonnenaufgang* · *Feste Uhrzeit* |
+| **Uhrzeit für das Ende** | nein | 01:00 | Nur wirksam bei „Feste Uhrzeit". Vor 12:00 = nach Mitternacht |
+| **Dämmerungsschwelle** | nein | −2° | Ab welcher Sonnenhöhe es als dunkel gilt |
 | **Master-Schalter** | nein | – | Oberste Ebene, „der Stecker". Alle müssen `on` sein. Hat Vorrang vor der Betriebsart. |
 | **Verhalten bei ausgeschaltetem Master** | nein | Zwangs-Aus | *Zwangs-Aus* = Ziele werden ausgeschaltet · *Handbetrieb* = Automatik hält sich raus |
 | **Zeitschaltuhr aktiv** | nein | – | Betriebsart-Schalter. Leer = kein Handbetrieb, Zeitquellen regieren immer. |
@@ -187,7 +248,13 @@ schreibt nur ins HA-Logbuch, „Anhaltende Benachrichtigung erstellen"
 Push-Benachrichtigungen – dafür ist die Geräteauswahl oben da. Wer sie nicht braucht,
 kann sie löschen.
 
-## Rezepte für Zeitquellen
+## Rezepte für eigene Zeitquellen
+
+> **Für Sonne und Uhrzeit ist das nicht mehr nötig** – dafür gibt es das eingebaute
+> Zeitfenster weiter oben. Dieses Kapitel bleibt für alles, was darüber hinausgeht:
+> zwei Fenster an einem Tag, Bedingungen mit Anwesenheit, Kalender oder Wetter. Es zeigt
+> zugleich, wie die Fensterlogik im Blueprint rechnet – wer sie nachvollziehen will,
+> findet hier die Herleitung.
 
 Alles über Einstellungen → Geräte & Dienste → **Helfer** → *+ Helfer anlegen* →
 *Template* → *Template für einen Binärsensor*. Das Template vorher unter
@@ -331,13 +398,14 @@ Keine Schaltuhr, sondern eine Sperre: nachts bedienst du das Licht ganz normal v
 tagsüber lässt die Automation es nicht zu, und was morgens noch brennt, geht mit dem
 Sonnenaufgang aus.
 
-Ein Helfer genügt – Template-Binärsensor, Zustand `{{ state_attr('sun.sun','elevation') < -2 }}`
-(Muster *Sonnenuntergang → Sonnenaufgang*, hier ohne Tageshälften-Klammer, weil genau die
-ganze Dunkelphase gemeint ist):
+Kein Helfer, kein Template – alles steht in der Automation:
 
 | Feld | Wert |
 |---|---|
-| Zeitquellen | `binary_sensor.es_ist_dunkel` |
+| Zeitquellen | *leer* |
+| Einschalten ab | **Sonnenuntergang** |
+| Ausschalten ab | **Sonnenaufgang** |
+| Dämmerungsschwelle | −2° (oder −6°, wenn erst bei richtiger Dunkelheit freigegeben werden soll) |
 | Schaltrichtung | **Nur ausschalten** |
 | Master-Schalter | *leer* |
 | Zeitschaltuhr aktiv | *leer* |
@@ -362,7 +430,10 @@ Handbetrieb, kein Master – nur Zeitquelle und Ziel:
 
 | Feld | Wert |
 |---|---|
-| Zeitquellen | `binary_sensor.aussenbeleuchtung_fenster` – Muster *Sonnenuntergang → Uhrzeit nach Mitternacht* mit `today_at('01:00')` |
+| Zeitquellen | *leer* |
+| Einschalten ab | **Sonnenuntergang** |
+| Ausschalten ab | **Feste Uhrzeit**, `01:00` |
+| Dämmerungsschwelle | −2° |
 | Schaltrichtung | Beides |
 | Master-Schalter | *leer* (oder ein `input_boolean.weihnachtszeit` mit Zwangs-Aus, dann endet die Saison mit einem Klick) |
 | Zeitschaltuhr aktiv | *leer* |
@@ -380,6 +451,7 @@ angeht, und meldet, wenn die Steckdose im Garten gar nicht mehr reagiert.
 | ID | Trigger | Zweck |
 |---|---|---|
 | `zeitquelle` | `state` auf die Zeitquellen, `to: "on"` / `to: "off"` | Regulärer Schaltzeitpunkt |
+| `fenster` | `numeric_state` auf `sun.sun`/`elevation` (unter und über der Schwelle) sowie `time` auf die beiden eingestellten Uhrzeiten | Kanten des eingebauten Fensters |
 | `schalter` | `state` auf Master-Schalter und Betriebsart, `to: ["on", "off"]` | Sofortige Neubewertung |
 | `ziel` | `state` auf die Ziel-Entitäten, `to: ["on", "off"]` | Fremdes Schalten sofort nachregeln – nur wirksam, wenn die Option eingeschaltet ist |
 | `neustart` | `homeassistant` / `start` | Nach einem Neustart verpasste Schaltzeitpunkte nachholen |
@@ -433,6 +505,25 @@ angeht, und meldet, wenn die Steckdose im Garten gar nicht mehr reagiert.
   die Last noch im alten Zustand ist, beide halten sich für zuständig. Der erste schaltet,
   der zweite läuft mit leerer Zielliste durch und meldet trotzdem Erfolg. Ergebnis: **ein
   Schaltvorgang, zwei Erfolgsmeldungen**, beide mit „1 Schaltversuch".
+- **Das eingebaute Fenster zählt wie eine Zeitquelle, nicht daneben.** Es fließt in
+  dieselbe ODER/UND-Verknüpfung ein, statt eine eigene Vorrangebene zu bekommen. Damit
+  bleibt die Entscheidungsmatrix unverändert – es kommt eine Quelle hinzu, keine neue
+  Ebene. „Nur bei Dunkelheit und nur wenn jemand da ist" ist dann Fenster + Quelle mit UND.
+- **Sonnenkanten über die Sonnenhöhe, nicht über `sunset`/`sunrise` mit Offset.** Ein
+  Minuten-Offset bedeutet je nach Jahreszeit eine andere Helligkeit; ein Grad Sonnenhöhe
+  ist immer dasselbe. Die Trigger hängen deshalb als `numeric_state` an derselben
+  Schwelle wie die Auswertung – ein `sun`-Trigger würde bei einer Schwelle ungleich 0
+  zum falschen Zeitpunkt feuern, und die Kante fiele bis zum nächsten Nachprüf-Tick
+  unter den Tisch.
+- **Ein halbes Fenster gilt als kein Fenster.** Steht nur eine der beiden Kanten, gibt es
+  keinen definierten Fensterzustand. Statt zu raten (Rest des Tages? bis Mitternacht?)
+  wird das Fenster ignoriert – sichtbar daran, dass ohne weitere Zeitquelle gar nichts
+  passiert.
+- **Die Tageshälften-Klammer steckt fest im Blueprint.** `elevation < x` heißt abends wie
+  morgens „dunkel". Welche Hälfte gemeint ist, leitet der Blueprint aus der Kombination ab:
+  eine Endzeit vor 12:00 bedeutet „nach Mitternacht", eine Startzeit ab 12:00 bedeutet
+  „abends". Das ist genau die Regel, an der die handgeschriebenen Rezepte am häufigsten
+  scheitern (siehe Rezept-Kapitel).
 - **Die Schaltrichtung wirkt nur auf die Zeitquellen-Ebene.** Master-Schalter und
   Betriebsart haben ihr eigenes, ausdrücklich eingestelltes Verhalten; würde die Richtung
   auch darauf wirken, ließe sich ein Zwangs-Aus über eine ganz anderslautende Einstellung
@@ -465,6 +556,14 @@ angeht, und meldet, wenn die Steckdose im Garten gar nicht mehr reagiert.
   des Zeitfensters von Hand einschaltet, wird von der zyklischen Nachprüfung innerhalb des
   eingestellten Intervalls wieder überstimmt. Richtige Reihenfolge also: **erst die
   Betriebsart ausschalten, dann von Hand schalten.**
+- **Ein Fenster pro Automation.** Zwei getrennte Fenster an einem Tag (morgens und abends)
+  gehen nur über einen `schedule.*`-Helfer als zusätzliche Zeitquelle oder über eine zweite
+  Automation.
+- **Die Fenster-Trigger feuern auch, wenn das Fenster nicht benutzt wird.** Die beiden
+  Zeit-Trigger hängen an den eingestellten Uhrzeiten (Vorgabe 23:00 und 01:00), die
+  Sonnen-Trigger an der Dämmerungsschwelle – ein Trigger-Block lässt sich in einem
+  Blueprint nicht per Eingabe weglassen. Solche Läufe enden beim Soll-Ist-Vergleich, ohne
+  zu schalten und ohne zu melden; sie belegen nur einen Trace-Platz.
 - **Sofortiges Nachregeln füllt den Trace-Puffer.** Jeder eigene Schaltvorgang löst den
   Ziel-Trigger mit aus. Der Folgelauf findet Soll = Ist und endet sofort, belegt aber einen
   der standardmäßig **5** gespeicherten Traces – der interessante Lauf ist dann schneller

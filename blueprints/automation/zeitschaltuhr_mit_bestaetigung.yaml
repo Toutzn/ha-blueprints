@@ -67,11 +67,16 @@ blueprint:
             Kalender-Entität.
 
 
-            WICHTIG: Die Quelle muss einen abfragbaren Zustand haben, kein Ereignis.
+            **Leer lassen**, wenn das eingebaute Zeitfenster unten genügt – Sonnenuntergang,
+            Sonnenaufgang und feste Uhrzeiten brauchen hier nichts.
+
+
+            WICHTIG: Eine Quelle muss einen abfragbaren Zustand haben, kein Ereignis.
             `sun.sun` selbst passt NICHT (dessen Zustand ist `above_horizon` /
             `below_horizon`), ebenso wenig `person` oder `device_tracker` (`home` /
             `not_home`) – dafür einen Template-Binärsensor anlegen. Rezepte stehen in
-            der README.
+            der Doku.
+          default: []
           selector:
             entity:
               multiple: true
@@ -131,6 +136,91 @@ blueprint:
                   value: nur_ausschalten
                 - label: "Nur einschalten – im Fenster wird eingeschaltet"
                   value: nur_einschalten
+
+    fenster:
+      name: Eingebautes Zeitfenster
+      icon: mdi:weather-sunset
+      collapsed: false
+      input:
+        fenster_start:
+          name: Einschalten ab
+          description: >-
+            Der Beginn des Fensters. „Kein Fenster" heißt: es zählen nur die Zeitquellen
+            oben.
+
+
+            Sonnenuntergang und Sonnenaufgang werden über die Sonnenhöhe bestimmt, nicht
+            über eine Uhrzeit – damit wandert die Schaltzeit über das Jahr korrekt mit.
+          default: keins
+          selector:
+            select:
+              mode: list
+              options:
+                - label: "Kein Fenster – nur die Zeitquellen oben"
+                  value: keins
+                - label: "Sonnenuntergang"
+                  value: sonnenuntergang
+                - label: "Feste Uhrzeit"
+                  value: uhrzeit
+
+        fenster_start_uhrzeit:
+          name: Uhrzeit für den Beginn
+          description: >-
+            Nur wirksam, wenn oben „Feste Uhrzeit" gewählt ist.
+          default: "23:00:00"
+          selector:
+            time:
+
+        fenster_ende:
+          name: Ausschalten ab
+          description: >-
+            Das Ende des Fensters. Beide Felder – Beginn und Ende – müssen gesetzt sein,
+            sonst gilt das Fenster als nicht konfiguriert und wird ignoriert.
+
+
+            Über Mitternacht ist ausdrücklich erlaubt: „ab Sonnenuntergang, aus um 01:00"
+            oder „ab 23:00, aus bei Sonnenaufgang" werden richtig gerechnet.
+          default: keins
+          selector:
+            select:
+              mode: list
+              options:
+                - label: "Kein Fenster – nur die Zeitquellen oben"
+                  value: keins
+                - label: "Sonnenaufgang"
+                  value: sonnenaufgang
+                - label: "Feste Uhrzeit"
+                  value: uhrzeit
+
+        fenster_ende_uhrzeit:
+          name: Uhrzeit für das Ende
+          description: >-
+            Nur wirksam, wenn oben „Feste Uhrzeit" gewählt ist. Eine Uhrzeit vor 12:00
+            wird als „nach Mitternacht" verstanden, das Fenster läuft dann über den
+            Tageswechsel.
+          default: "01:00:00"
+          selector:
+            time:
+
+        daemmerung_schwelle:
+          name: Dämmerungsschwelle
+          description: >-
+            Ab welcher Sonnenhöhe es als dunkel gilt – der Feinregler für
+            Sonnenuntergang und Sonnenaufgang. `0` ist der geometrische Sonnenauf- und
+            -untergang; negative Werte schieben nach hinten in die Dämmerung.
+
+
+            Anhaltspunkte für Mitteleuropa: `0` = exakt Sonnenuntergang,
+            `-2` = kurz danach (Vorgabe), `-6` = Ende der bürgerlichen Dämmerung,
+            es ist deutlich dunkel.
+          default: -2
+          selector:
+            number:
+              min: -12
+              max: 6
+              step: 0.5
+              unit_of_measurement: "°"
+              mode: slider
 
     schalter:
       name: Schalter und Betriebsart
@@ -456,6 +546,27 @@ triggers:
     to: ["on", "off"]
     id: ziel
 
+  # Kanten des eingebauten Fensters. Die Sonnen-Trigger hängen an der Dämmerungsschwelle,
+  # nicht an "sunset"/"sunrise" - sonst würde eine Schwelle ungleich 0 erst beim nächsten
+  # Nachprüf-Tick wirksam. Die beiden Zeit-Trigger feuern auch, wenn das Fenster gar nicht
+  # benutzt wird; solche Läufe enden beim Soll-Ist-Vergleich, ohne zu schalten.
+  - trigger: numeric_state
+    entity_id: sun.sun
+    attribute: elevation
+    below: !input daemmerung_schwelle
+    id: fenster
+  - trigger: numeric_state
+    entity_id: sun.sun
+    attribute: elevation
+    above: !input daemmerung_schwelle
+    id: fenster
+  - trigger: time
+    at: !input fenster_start_uhrzeit
+    id: fenster
+  - trigger: time
+    at: !input fenster_ende_uhrzeit
+    id: fenster
+
   # Selbstheilung
   - trigger: homeassistant
     event: start
@@ -474,6 +585,11 @@ variables:
   v_quellen: !input zeitquellen
   v_verknuepfung: !input zeitquellen_verknuepfung
   v_richtung: !input schaltrichtung
+  v_fenster_start: !input fenster_start
+  v_fenster_ende: !input fenster_ende
+  v_fenster_start_uhrzeit: !input fenster_start_uhrzeit
+  v_fenster_ende_uhrzeit: !input fenster_ende_uhrzeit
+  v_schwelle: !input daemmerung_schwelle
   v_ziel_trigger: !input ziel_trigger
   v_aktiv: !input aktiv_schalter
   v_master: !input master_entitaeten
@@ -512,13 +628,44 @@ actions:
   #    geschaltet; dann muss hier der neue Ist-Zustand herauskommen, nicht der alte.
   - alias: Soll-Zustand ermitteln
     variables:
+      # Ist das eingebaute Fenster überhaupt konfiguriert? Beide Kanten müssen gesetzt
+      # sein - ein halbes Fenster hat keinen definierten Zustand.
+      fenster_konfiguriert: >-
+        {{ v_fenster_start != 'keins' and v_fenster_ende != 'keins' }}
+
+      # Liegt "jetzt" im eingebauten Fenster? Sonnenkanten laufen über die Sonnenhöhe,
+      # Uhrzeit-Kanten über today_at(). Die Fälle über Mitternacht sind ODER-Fälle und
+      # müssen je Tageshälfte beschrieben werden - "elevation < x" heißt schließlich
+      # abends wie morgens "dunkel". Die Tageshälften-Klammer ist today_at('12:00').
+      fenster_an: >-
+        {%- if not fenster_konfiguriert -%}false
+        {%- else -%}
+        {%- set dunkel = (state_attr('sun.sun', 'elevation') | float(90)) < (v_schwelle | float(0)) -%}
+        {%- set mittag = today_at('12:00') -%}
+        {%- set jetzt = now() -%}
+        {%- set s_zeit = today_at(v_fenster_start_uhrzeit) -%}
+        {%- set e_zeit = today_at(v_fenster_ende_uhrzeit) -%}
+        {%- if v_fenster_start == 'sonnenuntergang' and v_fenster_ende == 'sonnenaufgang' -%}
+        {{ dunkel }}
+        {%- elif v_fenster_start == 'sonnenuntergang' -%}
+        {%- if e_zeit >= mittag -%}{{ mittag <= jetzt < e_zeit and dunkel }}
+        {%- else -%}{{ (mittag <= jetzt and dunkel) or jetzt < e_zeit }}{%- endif -%}
+        {%- elif v_fenster_ende == 'sonnenaufgang' -%}
+        {%- if s_zeit >= mittag -%}{{ jetzt >= s_zeit or (jetzt < mittag and dunkel) }}
+        {%- else -%}{{ s_zeit <= jetzt < mittag and dunkel }}{%- endif -%}
+        {%- else -%}
+        {%- if s_zeit < e_zeit -%}{{ s_zeit <= jetzt < e_zeit }}
+        {%- else -%}{{ jetzt >= s_zeit or jetzt < e_zeit }}{%- endif -%}
+        {%- endif -%}
+        {%- endif -%}
+
       # Vorbedingung: haben alle Entscheidungs-Eingaben einen brauchbaren Zustand?
       # Beim HA-Start sind Entitäten kurz "unavailable" - dann darf NICHTS geschaltet
       # werden, sonst wird "weiß ich nicht" als "aus" missverstanden.
       eingaben_bekannt: >-
         {% set quellen = expand(v_quellen) | list %}
         {% set schalter = expand(v_master) | list + expand(v_aktiv) | list %}
-        {{ quellen | count > 0
+        {{ (quellen | count > 0 or fenster_konfiguriert)
            and quellen | rejectattr('state', 'in', ['on', 'off']) | list | count == 0
            and schalter | rejectattr('state', 'in', ['on', 'off']) | list | count == 0 }}
 
@@ -531,9 +678,12 @@ actions:
         {{ expand(v_aktiv) | selectattr('state', 'ne', 'on') | list | count == 0 }}
 
       # Ebene 3: sagen die Zeitquellen "an"? ODER = eine genügt, UND = alle müssen.
+      # Das eingebaute Fenster zählt dabei wie eine weitere Zeitquelle mit.
       quelle_an: >-
         {% set an = expand(v_quellen) | selectattr('state', 'eq', 'on') | list | count %}
         {% set alle = expand(v_quellen) | list | count %}
+        {% set an = an + (1 if (fenster_konfiguriert and fenster_an) else 0) %}
+        {% set alle = alle + (1 if fenster_konfiguriert else 0) %}
         {{ an > 0 if v_verknuepfung == 'oder' else (alle > 0 and an == alle) }}
 
       # Soll-Zustand: 'on', 'off' oder 'egal' (= Automatik ist nicht zuständig).
