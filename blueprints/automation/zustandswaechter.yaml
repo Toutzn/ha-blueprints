@@ -1,0 +1,640 @@
+blueprint:
+  name: 🔌🛡️ Zustandswächter mit Schaltbestätigung
+  author: Torsten Wilms
+  source_url: https://github.com/Toutzn/ha-blueprints/blob/main/blueprints/automation/zustandswaechter.yaml
+  homeassistant:
+    min_version: "2024.10.0"
+  description: >-
+    Hält Entitäten dauerhaft in einem festen Zustand – `on` oder `off` – und prüft nach
+    jedem Eingriff nach, ob es wirklich geklappt hat.
+
+
+    **Wofür:** kritische Verbraucher, die nach einem Stromausfall auf keinen Fall aus
+    bleiben dürfen – Kühlschrank, Gefriertruhe, Server, Netzwerktechnik. Genauso für die
+    Gegenrichtung: ein Gerät, das dauerhaft aus bleiben soll und nicht durch einen
+    Spannungswiederkehr-Standard oder einen Fehlgriff wieder anläuft.
+
+
+    **Der eigentliche Punkt sind die Auslöser.** Ein reiner Zustandswechsel reicht
+    nicht: war Home Assistant während des Stromausfalls selbst aus, sieht es die
+    Steckdose nach dem Start einfach als „aus" – ohne Wechsel, ohne Trigger. Der
+    Blueprint hört deshalb auf vier Dinge: Abweichung vom Soll-Zustand, Rückkehr aus
+    `unavailable` (genau das ist die Signatur eines Stromausfalls), Neustart von Home
+    Assistant und ein zyklisches Nachprüfen im Hintergrund.
+
+
+    **Handbetrieb:** Ein optionaler Pause-Schalter hält den Wächter komplett raus – für
+    Abtauen, Wartung, Urlaub. Alternativ oder zusätzlich lässt sich eine Toleranzzeit
+    setzen: eine Abweichung von Hand wird dann erst korrigiert, wenn sie länger anhält.
+    Die Rückkehr aus `unavailable` und der Neustart umgehen die Toleranz bewusst – dort
+    war kein Mensch am Werk.
+
+
+    **Anlaufverzögerung:** Direkt nach der Stromrückkehr ist ein Funk-Aktor oft noch am
+    Anmelden und verschluckt den ersten Befehl. Der Blueprint wartet deshalb auf diesem
+    Weg erst einen Moment, bevor er schaltet.
+
+
+    **Meldungen:** Push aufs Handy, getrennt für Erfolg und Fehlschlag, plus eine
+    eigene Warnung, wenn ein Ziel längere Zeit gar nicht erreichbar ist – bei einem
+    Kühlschrank heißt das entweder „Steckdose defekt" oder „hier ist gerade überhaupt
+    kein Strom".
+
+
+    **Wichtig:** Ein Zustandswächter setzt sich durch. Ohne Pause-Schalter oder
+    Toleranzzeit lässt sich das Ziel nicht von Hand in den anderen Zustand bringen –
+    das ist der Sinn der Sache, führt aber zu Verwunderung, wenn man es vergisst.
+  domain: automation
+
+  input:
+    ueberwachung:
+      name: Überwachung
+      icon: mdi:shield-check-outline
+      collapsed: false
+      input:
+        ziele:
+          name: Zu überwachende Entitäten
+          description: >-
+            Diese Entitäten werden überwacht, bei Abweichung geschaltet und einzeln auf
+            Erfolg geprüft. Bewusst Entitäten statt Geräte: nur so lässt sich der
+            Ist-Zustand zurücklesen.
+
+
+            Mehrere Ziele in einer Automation nur, wenn sie wirklich denselben
+            Soll-Zustand und dieselben Regeln haben. Kühlschrank und Serverschrank
+            gehören in zwei Automationen – schon damit die Meldungen auseinanderzuhalten
+            sind.
+          selector:
+            entity:
+              multiple: true
+              filter:
+                - domain: switch
+                - domain: light
+                - domain: input_boolean
+                - domain: fan
+                - domain: humidifier
+                - domain: siren
+
+        soll_zustand:
+          name: Soll-Zustand
+          description: >-
+            Der Zustand, den die Ziel-Entitäten dauerhaft halten sollen. Jede Abweichung
+            wird zurückgeschaltet.
+          default: "on"
+          selector:
+            select:
+              mode: list
+              options:
+                - label: "Dauerhaft EIN – z. B. Kühlschrank, Server, Netzwerktechnik"
+                  value: "on"
+                - label: "Dauerhaft AUS – Gerät darf nicht von selbst anlaufen"
+                  value: "off"
+
+    handbetrieb:
+      name: Handbetrieb und Ausnahmen
+      icon: mdi:hand-back-right-outline
+      collapsed: false
+      input:
+        pause_entitaeten:
+          name: Pause-Schalter (optional)
+          description: >-
+            Solange eine dieser Entitäten `on` ist, hält sich der Wächter komplett raus –
+            weder schalten noch melden. Gedacht für Abtauen, Wartung, Umbau; üblich ist
+            ein `input_boolean.wartung_kuehlschrank`.
+
+
+            Leer lassen, wenn es keinen Handbetrieb geben soll.
+
+
+            Hinweis: Ist ein Pause-Schalter selbst nicht auswertbar (`unavailable`,
+            `unknown`), hält sich der Wächter ebenfalls raus – „weiß ich nicht" wird
+            nicht als „nicht pausiert" gedeutet.
+          default: []
+          selector:
+            entity:
+              multiple: true
+              filter:
+                - domain: input_boolean
+                - domain: binary_sensor
+                - domain: switch
+                - domain: schedule
+
+        toleranz:
+          name: Toleranz bei Abweichung von Hand
+          description: >-
+            So lange darf eine Ziel-Entität vom Soll-Zustand abweichen, bevor der Wächter
+            eingreift. `0` = sofort korrigieren.
+
+
+            Die Toleranz gilt **nicht** für die Rückkehr aus `unavailable` und **nicht**
+            für den Neustart von Home Assistant – in diesen Fällen wird ohne Wartezeit
+            korrigiert. Genau dafür ist die Unterscheidung da: ein Stromausfall soll nicht
+            ausgesessen werden, ein kurzer Handgriff schon.
+          default: 0
+          selector:
+            number:
+              min: 0
+              max: 240
+              step: 1
+              unit_of_measurement: Minuten
+              mode: box
+
+    schalten:
+      name: Schalten und Nachprüfen
+      icon: mdi:check-decagram-outline
+      collapsed: false
+      input:
+        anlauf_verzoegerung:
+          name: Wartezeit nach Rückkehr aus unavailable
+          description: >-
+            Nach einem Stromausfall ist ein Funk-Aktor zwar wieder sichtbar, aber oft noch
+            am Anmelden und verschluckt den ersten Schaltbefehl. Diese Wartezeit gilt nur
+            auf dem Rückkehr- und Neustart-Weg, nicht bei einer normalen Abweichung.
+          default: 5
+          selector:
+            number:
+              min: 0
+              max: 300
+              step: 1
+              unit_of_measurement: Sekunden
+              mode: slider
+
+        pruefung_verzoegerung:
+          name: Wartezeit vor der Nachprüfung
+          description: >-
+            Wie lange nach dem Schaltbefehl gewartet wird, bevor der Ist-Zustand geprüft
+            wird. Bei Funk-Aktoren (Zigbee, Z-Wave, WLAN) lieber etwas großzügiger.
+          default: 10
+          selector:
+            number:
+              min: 2
+              max: 120
+              step: 1
+              unit_of_measurement: Sekunden
+              mode: slider
+
+        max_versuche:
+          name: Maximale Schaltversuche
+          description: >-
+            Wie oft der Schaltbefehl wiederholt wird, solange der Ist-Zustand nicht passt.
+            Wiederholt wird nur für die Entitäten, die noch nicht reagiert haben.
+          default: 5
+          selector:
+            number:
+              min: 1
+              max: 20
+              step: 1
+              mode: box
+
+        nachpruefung:
+          name: Zyklische Nachprüfung aktiv
+          description: >-
+            Prüft im Hintergrund laufend, ob Soll- und Ist-Zustand übereinstimmen. Das ist
+            das eigentliche Sicherheitsnetz: es fängt verlorene Funkbefehle, hängende
+            Integrationen und jeden Trigger ab, der aus irgendeinem Grund nicht kam.
+
+
+            Nur abschalten, wenn der Wächter ausschließlich auf Ereignisse reagieren soll.
+          default: true
+          selector:
+            boolean:
+
+        sync_intervall:
+          name: Intervall der Nachprüfung
+          description: >-
+            Die Automation bricht sofort ab, wenn keine Abweichung besteht – ein kurzes
+            Intervall kostet also praktisch keine Leistung.
+          default: "/5"
+          selector:
+            select:
+              options:
+                - label: Jede Minute
+                  value: "/1"
+                - label: Alle 5 Minuten
+                  value: "/5"
+                - label: Alle 15 Minuten
+                  value: "/15"
+                - label: Alle 30 Minuten
+                  value: "/30"
+
+    erreichbarkeit:
+      name: Erreichbarkeit
+      icon: mdi:lan-disconnect
+      collapsed: false
+      input:
+        unerreichbar_melden:
+          name: Warnen, wenn ein Ziel nicht erreichbar ist
+          description: >-
+            Ein Ziel mit Zustand `unavailable` lässt sich nicht schalten – es anzufunken
+            kostet nur Zeit. Stattdessen gibt es eine eigene Meldung, denn bei einem
+            kritischen Verbraucher ist „Steckdose antwortet nicht" die wichtigere
+            Information: entweder ist der Aktor defekt, oder es liegt dort gerade
+            überhaupt keine Spannung an.
+          default: true
+          selector:
+            boolean:
+
+        unerreichbar_nach:
+          name: Warnen nach
+          description: >-
+            Wie lange ein Ziel ununterbrochen `unavailable` sein muss, bevor gewarnt wird.
+            Kurze Funklöcher und der Neustart von Home Assistant sollen keine Meldung
+            auslösen – unter 5 Minuten wird es schnell nervig.
+          default: 10
+          selector:
+            number:
+              min: 1
+              max: 240
+              step: 1
+              unit_of_measurement: Minuten
+              mode: box
+
+    push:
+      name: Push-Benachrichtigungen
+      icon: mdi:cellphone-message
+      collapsed: false
+      input:
+        push_geraete_erfolg:
+          name: Push bei Erfolg an diese Geräte (optional)
+          description: >-
+            Geräte mit installierter Home-Assistant-App, die eine Push-Benachrichtigung
+            erhalten, wenn eine Abweichung erfolgreich korrigiert wurde. Leer lassen =
+            kein Push bei Erfolg.
+
+
+            Bei einem Zustandswächter ist diese Meldung durchaus interessant: sie sagt
+            „hier war gerade ein Stromausfall, ich habe es gerichtet".
+          default: []
+          selector:
+            device:
+              integration: mobile_app
+              multiple: true
+
+        push_geraete_fehler:
+          name: Push bei Fehlschlag an diese Geräte (optional)
+          description: >-
+            Geräte, die eine Push-Benachrichtigung erhalten, wenn der Schaltbefehl auch
+            nach allen Versuchen nicht angekommen ist oder ein Ziel nicht erreichbar
+            bleibt. Leer lassen = kein Push bei Fehlschlag.
+          default: []
+          selector:
+            device:
+              integration: mobile_app
+              multiple: true
+
+        push_titel:
+          name: Titel der Push-Benachrichtigung
+          description: >-
+            Erscheint als Überschrift der Meldung. Bei mehreren Automationen aus diesem
+            Blueprint hilft ein sprechender Titel beim Auseinanderhalten, z. B.
+            „Kühlschrank".
+          default: Zustandswächter
+          selector:
+            text:
+
+        fehler_melden:
+          name: Fehlermeldungen bei der zyklischen Nachprüfung
+          description: >-
+            Ein dauerhaft nicht erreichbares Gerät erzeugt sonst bei jedem Nachprüf-Durchlauf
+            eine neue Meldung, im Standardintervall also alle 5 Minuten.
+
+
+            „Unterdrücken" meldet nur, wenn ein echtes Ereignis der Auslöser war: Abweichung,
+            Rückkehr, Neustart, Pause-Schalter oder die Erreichbarkeits-Warnung oben.
+            Korrigiert wird weiterhin bei jedem Durchlauf, und **Erfolgsmeldungen sind nicht
+            betroffen** – die kommen auch aus der Nachprüfung heraus, also genau dann, wenn
+            es endlich geklappt hat.
+          default: ereignisse
+          selector:
+            select:
+              mode: list
+              options:
+                - label: "Unterdrücken – nur bei Abweichung, Rückkehr, Neustart oder Schalter"
+                  value: ereignisse
+                - label: "Auch bei jedem Nachprüf-Durchlauf melden"
+                  value: immer
+
+        push_kritisch:
+          name: Fehlschlag als kritische Benachrichtigung
+          description: >-
+            Lässt den Fehler-Push auch bei stummgeschaltetem oder auf „Nicht stören"
+            gestelltem Telefon durch. Setzt voraus, dass in der Companion-App die
+            Berechtigung für kritische Hinweise erteilt ist. Gilt nur für den Fehlschlag,
+            nie für den Erfolg.
+
+
+            Beim Gefrierschrank ist das die richtige Einstellung – die Meldung nützt nichts,
+            wenn sie bis zum Morgen wartet.
+          default: false
+          selector:
+            boolean:
+
+    meldungen:
+      name: Meldungen
+      icon: mdi:bell-outline
+      collapsed: true
+      input:
+        aktion_bei_erfolg:
+          name: Aktion bei Erfolg
+          description: >-
+            Zusätzliche Aktion über den Push oben hinaus – läuft nur, wenn tatsächlich
+            eingegriffen wurde und danach alle Ziel-Entitäten den Soll-Zustand halten.
+            Die vorgegebene Aktion schreibt lediglich ins HA-Logbuch; wer sie nicht
+            braucht, kann sie löschen.
+
+
+            Nutzbare Variablen: `soll_zustand` (`on`/`off`), `soll_text` (`EIN`/`AUS`),
+            `grund_text` (Auslöser im Klartext), `ziel_liste` (alle Ziele), `faellig`
+            (die korrigierten Entitäten), `versuche` (Anzahl Schaltversuche).
+          default:
+            - action: logbook.log
+              data:
+                name: Zustandswächter
+                message: >-
+                  {{ grund_text }}: zurück auf '{{ soll_zustand }}'
+                  ({{ versuche }} Versuch(e)) – {{ faellig | join(', ') }}
+          selector:
+            action: {}
+
+        aktion_bei_fehler:
+          name: Aktion bei Fehlschlag
+          description: >-
+            Zusätzliche Aktion über den Push oben hinaus – läuft, wenn nach allen Versuchen
+            noch Entitäten den Soll-Zustand nicht erreicht haben oder nicht erreichbar sind.
+            Die vorgegebene Aktion erzeugt die Glocken-Meldung in der HA-Oberfläche.
+
+
+            Nutzbare Variablen: `soll_zustand`, `soll_text`, `grund_text`, `restliche`
+            (reagieren nicht), `nicht_erreichbar` (gar nicht da), `versuche`.
+          default:
+            - action: persistent_notification.create
+              data:
+                title: Zustandswächter – Eingriff fehlgeschlagen
+                message: >-
+                  {{ grund_text }}: konnte nach {{ versuche }} Versuch(en) nicht auf
+                  '{{ soll_zustand }}' schalten – {{ (restliche + nicht_erreichbar) | join(', ') }}
+          selector:
+            action: {}
+
+# ---------------------------------------------------------------------------
+
+mode: queued
+max: 10
+max_exceeded: silent
+
+triggers:
+  # 1. Rückkehr aus "unavailable" – das ist die Signatur eines Stromausfalls: das Gerät
+  #    war weg und meldet sich mit einem Zustand zurück, der nicht der gewünschte sein
+  #    muss. Bewusst OHNE Toleranzzeit: hier war kein Mensch am Werk.
+  - trigger: state
+    entity_id: !input ziele
+    from: "unavailable"
+    to: ["on", "off"]
+    id: rueckkehr
+
+  # 2. Normale Abweichung, sofort. Wird nur beachtet, wenn keine Toleranzzeit gesetzt ist.
+  #    Explizites "to:", sonst feuern reine Attributänderungen mit.
+  - trigger: state
+    entity_id: !input ziele
+    to: ["on", "off"]
+    id: abweichung
+
+  # 3. Dieselbe Abweichung, aber erst nach der Toleranzzeit. Wird nur beachtet, wenn eine
+  #    Toleranz > 0 gesetzt ist. Zwei getrennte Trigger statt eines mit variablem "for:",
+  #    damit der Fall "Toleranz 0" nicht von einer Null-Wartezeit abhängt.
+  - trigger: state
+    entity_id: !input ziele
+    to: ["on", "off"]
+    for:
+      minutes: !input toleranz
+    id: abweichung_verzoegert
+
+  # 4. Ziel längere Zeit gar nicht da -> eigene Warnung, kein Schaltversuch.
+  - trigger: state
+    entity_id: !input ziele
+    to: "unavailable"
+    for:
+      minutes: !input unerreichbar_nach
+    id: weg
+
+  # 5. Pause-Schalter geändert -> Lage sofort neu bewerten (Pause beendet = nachziehen).
+  - trigger: state
+    entity_id: !input pause_entitaeten
+    to: ["on", "off"]
+    id: pause
+
+  # 6. Selbstheilung: Neustart deckt den Fall ab, dass Home Assistant selbst stromlos war
+  #    und den Zustandswechsel deshalb nie gesehen hat.
+  - trigger: homeassistant
+    event: start
+    id: neustart
+  - trigger: time_pattern
+    minutes: !input sync_intervall
+    id: sync
+
+conditions: []
+
+variables:
+  # ACHTUNG: Variablen auf dieser Ebene rendert Home Assistant zum TRIGGER-Zeitpunkt,
+  # nicht beim Ausführen. Bei "mode: queued" wartet ein zweiter Lauf in der Schlange,
+  # rechnet aber mit dem Zustand von vor der Wartezeit. Hier stehen deshalb nur
+  # statische Eingaben - jede Entscheidung fällt unten in den Aktionen.
+  v_soll: !input soll_zustand
+  v_pause: !input pause_entitaeten
+  v_toleranz: !input toleranz
+  v_nachpruefung: !input nachpruefung
+  v_max_versuche: !input max_versuche
+  v_anlauf: !input anlauf_verzoegerung
+  v_unerreichbar_melden: !input unerreichbar_melden
+  v_unerreichbar_nach: !input unerreichbar_nach
+  v_push_erfolg: !input push_geraete_erfolg
+  v_push_fehler: !input push_geraete_fehler
+  v_push_kritisch: !input push_kritisch
+  v_fehler_melden: !input fehler_melden
+
+  ziel_liste: !input ziele
+
+actions:
+  # 1. Welcher Auslöser zählt überhaupt?
+  #    - "abweichung" nur ohne Toleranz, "abweichung_verzoegert" nur mit Toleranz;
+  #      sonst würde jede Abweichung zweimal bearbeitet.
+  #    - "sync" nur bei aktivierter Nachprüfung.
+  #    - "weg" nur, wenn die Erreichbarkeits-Warnung gewünscht ist.
+  #    Diese Prüfung VERWIRFT einen Auslöser - stünde sie in "conditions:", liefe sie vor
+  #    den Variablen; als erste Aktion hat sie den passenden Zugriff auf v_*. Bei
+  #    "mode: queued" ist das unkritisch, weil kein laufender Durchlauf abgeräumt wird.
+  - alias: Auslöser respektieren
+    condition: template
+    value_template: >-
+      {% set t = trigger.id | default('manuell') if trigger is defined else 'manuell' %}
+      {% set tol = v_toleranz | float(0) %}
+      {{ t in ['rueckkehr', 'pause', 'neustart', 'manuell']
+         or (t == 'sync' and v_nachpruefung)
+         or (t == 'weg' and v_unerreichbar_melden)
+         or (t == 'abweichung' and tol == 0)
+         or (t == 'abweichung_verzoegert' and tol > 0) }}
+
+  # 2. Lagebild ERST JETZT erheben - beim Ausführen, nicht beim Auslösen.
+  - alias: Lage bewerten
+    variables:
+      ausloeser: >-
+        {{ trigger.id | default('manuell') if trigger is defined else 'manuell' }}
+
+      # Auslöser im Klartext, für alle Meldungen
+      grund_text: >-
+        {% if ausloeser == 'rueckkehr' %}Gerät nach Ausfall zurückgekehrt{% elif ausloeser == 'weg' %}Erreichbarkeitswarnung{% elif ausloeser == 'neustart' %}Home Assistant neu gestartet{% elif ausloeser == 'sync' %}Zyklische Nachprüfung{% elif ausloeser == 'pause' %}Pause-Schalter geändert{% elif ausloeser == 'manuell' %}Manuell ausgeführt{% else %}Abweichung vom Soll-Zustand{% endif %}
+
+      # Pause-Schalter: alle müssen auswertbar UND "off" sein, damit der Wächter arbeitet.
+      # Ein Pause-Schalter ohne brauchbaren Zustand (HA-Start!) pausiert ebenfalls -
+      # "weiß ich nicht" darf nicht als "nicht pausiert" durchgehen.
+      pausiert: >-
+        {{ expand(v_pause) | list | count != v_pause | count
+           or expand(v_pause) | selectattr('state', 'ne', 'off') | list | count > 0 }}
+
+      soll_zustand: "{{ 'egal' if pausiert else v_soll }}"
+      soll_text: "{{ 'EIN' if v_soll == 'on' else 'AUS' }}"
+
+      # Umgeht dieser Lauf die Toleranzzeit? Rückkehr und Neustart ja - dort war kein
+      # Mensch am Werk. Ein verzögerter Abweichungs-Trigger hat seine Zeit schon abgesessen.
+      sofort: >-
+        {{ v_toleranz | float(0) == 0
+           or ausloeser in ['rueckkehr', 'neustart', 'manuell'] }}
+
+      # Zählt die Schaltversuche. Vorgabe 0, falls die Schleife gar nicht erst anläuft.
+      versuche: 0
+
+      # Darf dieser Lauf Fehler melden? Nachprüf-Ticks schweigen auf Wunsch.
+      melden_erlaubt: >-
+        {{ v_fehler_melden == 'immer' or ausloeser != 'sync' }}
+
+  - alias: Nur handeln, wenn der Wächter zuständig ist
+    condition: template
+    value_template: "{{ soll_zustand in ['on', 'off'] }}"
+
+  # 3. Wer ist fällig? Toleranzzeit hier einmal anwenden - danach steht die Liste fest
+  #    und wird bis zum Erfolg bearbeitet. "nicht im Soll" und "nicht erreichbar" sind
+  #    zwei verschiedene Dinge: ein Gerät mit Zustand 'unavailable' lässt sich nicht
+  #    schalten, es wiederholt anzufunken kostet nur Zeit.
+  - alias: Fällige Ziele bestimmen
+    variables:
+      faellig: >-
+        {% set tol = v_toleranz | float(0) * 60 %}
+        {% set ns = namespace(l=[]) %}
+        {% for e in expand(ziel_liste) if e.state in ['on', 'off'] and e.state != soll_zustand %}
+          {% if sofort or (now() - e.last_changed).total_seconds() >= tol %}
+            {% set ns.l = ns.l + [e.entity_id] %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.l }}
+      # Unerreichbar zaehlt erst ab der eingestellten Karenzzeit. Sonst meldet jeder
+      # Home-Assistant-Start einen Fehlschlag: direkt nach dem Start sind alle Entitaeten
+      # kurz 'unknown'/'unavailable', ohne dass irgendetwas kaputt waere.
+      weggeblieben: >-
+        {% set grenze = v_unerreichbar_nach | float(0) * 60 %}
+        {% set ns = namespace(l=[]) %}
+        {% for e in expand(ziel_liste) if e.state not in ['on', 'off'] %}
+          {% if (now() - e.last_changed).total_seconds() >= grenze %}
+            {% set ns.l = ns.l + [e.entity_id] %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.l }}
+
+  - alias: Nur handeln, wenn es etwas zu schalten oder zu melden gibt
+    condition: template
+    value_template: >-
+      {{ faellig | count > 0
+         or (weggeblieben | count > 0 and v_unerreichbar_melden and melden_erlaubt) }}
+
+  # 4. Nach Stromrückkehr und Neustart kurz Luft lassen: der Aktor ist zwar sichtbar,
+  #    aber oft noch am Anmelden und verschluckt den ersten Befehl.
+  - alias: Anlaufverzögerung nach Rückkehr
+    if:
+      - condition: template
+        value_template: >-
+          {{ ausloeser in ['rueckkehr', 'neustart']
+             and faellig | count > 0
+             and v_anlauf | float(0) > 0 }}
+    then:
+      - delay:
+          seconds: !input anlauf_verzoegerung
+
+  # 5. Schalten, warten, nachprüfen – und nur die Nachzügler erneut anstoßen.
+  #    "while" statt "until": die Bedingung wird VOR jedem Durchgang geprüft. Gibt es
+  #    nichts Schaltbares, läuft die Schleife null Mal - kein Leerbefehl, keine Wartezeit.
+  - alias: Schalten mit Wiederholung
+    repeat:
+      sequence:
+        # Zähler mitschreiben - "repeat.index" ist nach der Schleife nicht mehr verfügbar
+        - variables:
+            versuche: "{{ repeat.index }}"
+        - action: "homeassistant.turn_{{ soll_zustand }}"
+          continue_on_error: true
+          target:
+            entity_id: >-
+              {{ expand(faellig)
+                 | selectattr('state', 'in', ['on', 'off'])
+                 | selectattr('state', 'ne', soll_zustand)
+                 | map(attribute='entity_id') | list }}
+        - delay:
+            seconds: !input pruefung_verzoegerung
+      while:
+        - condition: template
+          value_template: >-
+            {{ expand(faellig)
+                 | selectattr('state', 'in', ['on', 'off'])
+                 | selectattr('state', 'ne', soll_zustand) | list | count > 0
+               and repeat.index <= v_max_versuche }}
+
+  # 6. Ergebnis auswerten - getrennt nach "reagiert nicht" und "gar nicht da"
+  - variables:
+      restliche: >-
+        {{ expand(faellig)
+             | selectattr('state', 'in', ['on', 'off'])
+             | selectattr('state', 'ne', soll_zustand)
+             | map(attribute='entity_id') | list }}
+      nicht_erreichbar: >-
+        {% set grenze = v_unerreichbar_nach | float(0) * 60 %}
+        {% set ns = namespace(l=[]) %}
+        {% for e in expand(ziel_liste) if e.state not in ['on', 'off'] %}
+          {% if (now() - e.last_changed).total_seconds() >= grenze %}
+            {% set ns.l = ns.l + [e.entity_id] %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.l }}
+      erfolg: >-
+        {{ restliche | count == 0
+           and (nicht_erreichbar | count == 0 or not v_unerreichbar_melden) }}
+
+  # 7. Push an die ausgewählten Geräte. Leere Liste = keine Runde, kein Versand.
+  - variables:
+      push_ziele: >-
+        {% if erfolg %}{{ v_push_erfolg }}{% elif melden_erlaubt %}{{ v_push_fehler }}{% else %}{{ [] }}{% endif %}
+      push_text: >-
+        {% set n = versuche | int(0) %}{% set s = 'Schaltversuch' if n == 1 else 'Schaltversuchen' %}{% if erfolg %}{% if faellig | count > 0 %}{{ grund_text }}: {{ faellig | join(', ') }} wieder {{ soll_text }} – nach {{ n }} {{ s }}{% else %}{{ grund_text }}: alles im Soll ({{ soll_text }}){% endif %}{% else %}{{ grund_text }}: {% if restliche | count > 0 %}{{ restliche | join(', ') }} bleibt nicht {{ soll_text }} (nach {{ n }} {{ s }}){% if nicht_erreichbar | count > 0 %}; {% endif %}{% endif %}{% if nicht_erreichbar | count > 0 %}nicht erreichbar: {{ nicht_erreichbar | join(', ') }}{% endif %}{% endif %}
+      # Gleicher Tag pro Automation: eine neue Meldung ersetzt die vorige,
+      # statt eine weitere Zeile im Mitteilungszentrum anzulegen.
+      push_tag: "zustandswaechter_{{ ziel_liste | join('_') | slugify }}"
+      push_extra: >-
+        {% if not erfolg and v_push_kritisch %}{{ {'tag': push_tag, 'push': {'sound': {'name': 'default', 'critical': 1, 'volume': 1.0}}} }}{% else %}{{ {'tag': push_tag} }}{% endif %}
+
+  - alias: Push-Benachrichtigung senden
+    repeat:
+      for_each: "{{ push_ziele }}"
+      sequence:
+        # Der Notify-Dienst der Companion-App heisst notify.mobile_app_<Geraetename>.
+        # device_attr(...,'name') liefert den Namen bei der Registrierung - genau den,
+        # aus dem der Dienstname gebildet wurde (nicht die spaetere Umbenennung).
+        - action: "notify.mobile_app_{{ device_attr(repeat.item, 'name') | slugify }}"
+          continue_on_error: true
+          data:
+            title: !input push_titel
+            message: "{{ push_text }}"
+            data: "{{ push_extra }}"
+
+  # 8. Zusaetzliche frei definierte Aktionen
+  - alias: Zusatzaktion bei Erfolg oder Fehlschlag
+    if:
+      - condition: template
+        value_template: "{{ erfolg }}"
+    then: !input aktion_bei_erfolg
+    else: !input aktion_bei_fehler
