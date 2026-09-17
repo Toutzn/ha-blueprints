@@ -37,6 +37,12 @@ blueprint:
     beide Fälle hinterlegen.
 
 
+    **Schaltrichtung:** Die Zeitquellen dürfen auch nur in eine Richtung wirken.
+    „Nur ausschalten" macht aus der Zeitschaltuhr eine Sperre: innerhalb des Fensters
+    schaltest du frei, außerhalb wird konsequent abgeschaltet. „Nur einschalten" ist
+    das Gegenstück.
+
+
     **Wichtig zur Nachprüfung:** Solange die Zeitschaltuhr aktiv ist, setzt die
     zyklische Nachprüfung den Soll-Zustand auch gegen manuelles Schalten durch.
     Für Handbetrieb die Betriebsart ausschalten – oder die Nachprüfung deaktivieren.
@@ -95,6 +101,36 @@ blueprint:
                   value: oder
                 - label: "UND – alle Quellen müssen on sein"
                   value: und
+
+        schaltrichtung:
+          name: Schaltrichtung
+          description: >-
+            Ob die Zeitquellen beide Richtungen vorgeben dürfen oder nur eine.
+
+
+            „Nur ausschalten" macht aus der Zeitschaltuhr eine Sperre: im Fenster
+            bleibt das Schalten dir überlassen, außerhalb wird konsequent
+            abgeschaltet. Typisch für Außenlicht, das tagsüber nichts zu suchen hat –
+            die Zeitquelle ist dann ein Binärsensor „es ist dunkel".
+
+
+            „Nur einschalten" ist das Gegenstück: die Automatik schaltet ein und
+            überlässt dir das Ausschalten.
+
+
+            Betrifft **nur** die Zeitquellen. Master-Schalter und Betriebsart behalten
+            ihr eigenes Verhalten – ein dort eingestelltes Zwangs-Aus greift weiterhin.
+          default: beides
+          selector:
+            select:
+              mode: list
+              options:
+                - label: "Beides – Zeitquellen schalten ein und aus"
+                  value: beides
+                - label: "Nur ausschalten – außerhalb des Fensters wird abgeschaltet"
+                  value: nur_ausschalten
+                - label: "Nur einschalten – im Fenster wird eingeschaltet"
+                  value: nur_einschalten
 
     schalter:
       name: Schalter und Betriebsart
@@ -245,6 +281,28 @@ blueprint:
                 - label: Alle 30 Minuten
                   value: "/30"
 
+        ziel_trigger:
+          name: Sofort nachregeln, wenn fremd geschaltet wird
+          description: >-
+            Horcht zusätzlich auf die Ziel-Entitäten selbst: wird eine davon von Hand,
+            per Szene oder Sprachassistent geschaltet, bewertet die Automation sofort
+            neu, statt bis zum nächsten Nachprüf-Intervall zu warten.
+
+
+            Sinnvoll überall dort, wo die Automatik das letzte Wort haben soll – vor
+            allem bei einer Sperre („nur ausschalten"), die sonst bis zu einem vollen
+            Nachprüf-Intervall hinterherhinkt.
+
+
+            Unabhängig von der zyklischen Nachprüfung; beides lässt sich einzeln
+            an- und abschalten. Zu wissen: jeder eigene Schaltvorgang löst diesen
+            Trigger ebenfalls aus. Der Folgelauf findet Soll = Ist und bricht sofort
+            ab – er belegt aber einen Platz im Trace-Puffer (Standard 5 pro
+            Automation).
+          default: false
+          selector:
+            boolean:
+
     push:
       name: Push-Benachrichtigungen
       icon: mdi:cellphone-message
@@ -390,6 +448,14 @@ triggers:
     to: ["on", "off"]
     id: schalter
 
+  # Jemand hat an einer Ziel-Entität geschaltet - von Hand, per Szene, per Assistent.
+  # Der Trigger ist immer aktiv; ob er verarbeitet wird, entscheidet "ziel_trigger"
+  # weiter unten. Ein Trigger-Block lässt sich nicht per Eingabe abschalten.
+  - trigger: state
+    entity_id: !input ziele
+    to: ["on", "off"]
+    id: ziel
+
   # Selbstheilung
   - trigger: homeassistant
     event: start
@@ -407,6 +473,8 @@ variables:
   # statische Eingaben - jede Entscheidung fällt unten in den Aktionen.
   v_quellen: !input zeitquellen
   v_verknuepfung: !input zeitquellen_verknuepfung
+  v_richtung: !input schaltrichtung
+  v_ziel_trigger: !input ziel_trigger
   v_aktiv: !input aktiv_schalter
   v_master: !input master_entitaeten
   v_verhalten_master: !input verhalten_bei_master_aus
@@ -428,6 +496,16 @@ actions:
       {{ trigger is not defined
          or (trigger.id | default('manuell')) != 'sync'
          or v_nachpruefung }}
+
+  # 1b. Ziel-Trigger nur verarbeiten, wenn er eingeschaltet ist. Steht hier und nicht
+  #     in "conditions", weil bei "mode: queued" nichts abgebrochen wird - ein neuer
+  #     Lauf reiht sich nur ein. (Bei "mode: restart" müsste es in "conditions".)
+  - alias: Ziel-Trigger respektieren
+    condition: template
+    value_template: >-
+      {{ trigger is not defined
+         or (trigger.id | default('manuell')) != 'ziel'
+         or v_ziel_trigger }}
 
   # 2. Lagebild ERST JETZT erheben - beim Ausführen, nicht beim Auslösen.
   #    Wartete dieser Lauf in der Warteschlange, hat der vorherige eventuell schon
@@ -461,11 +539,11 @@ actions:
       # Soll-Zustand: 'on', 'off' oder 'egal' (= Automatik ist nicht zuständig).
       # Unbekannte Zustände zuerst, dann Master, dann Betriebsart, dann die Zeitquellen.
       soll_zustand: >-
-        {% if not eingaben_bekannt %}egal{% elif not master_ok %}{{ 'off' if v_verhalten_master == 'ausschalten' else 'egal' }}{% elif not uhr_ok %}{{ 'off' if v_verhalten_uhr == 'ausschalten' else 'egal' }}{% else %}{{ 'on' if quelle_an else 'off' }}{% endif %}
+        {% if not eingaben_bekannt %}egal{% elif not master_ok %}{{ 'off' if v_verhalten_master == 'ausschalten' else 'egal' }}{% elif not uhr_ok %}{{ 'off' if v_verhalten_uhr == 'ausschalten' else 'egal' }}{% elif quelle_an %}{{ 'egal' if v_richtung == 'nur_ausschalten' else 'on' }}{% else %}{{ 'egal' if v_richtung == 'nur_einschalten' else 'off' }}{% endif %}
 
       # Auslöser, maschinenlesbar
       grund: >-
-        {% if not eingaben_bekannt %}unbekannt{% elif not master_ok %}master_aus{% elif not uhr_ok %}zeitschaltuhr_aus{% else %}zeitquelle{% endif %}
+        {% if not eingaben_bekannt %}unbekannt{% elif not master_ok %}master_aus{% elif not uhr_ok %}zeitschaltuhr_aus{% elif trigger is defined and (trigger.id | default('')) == 'ziel' %}nachgeregelt{% else %}zeitquelle{% endif %}
 
       # Zählt die Schaltversuche. Vorgabe 0, falls die Schleife gar nicht erst anläuft
       # (etwa weil alle Ziele unerreichbar sind).
@@ -479,7 +557,7 @@ actions:
 
       # Auslöser im Klartext, für Meldungen
       grund_text: >-
-        {% if grund == 'unbekannt' %}Zustand nicht verfügbar{% elif grund == 'master_aus' %}Master-Schalter aus{% elif grund == 'zeitschaltuhr_aus' %}Zeitschaltuhr deaktiviert{% else %}Zeitquelle{% endif %}
+        {% if grund == 'unbekannt' %}Zustand nicht verfügbar{% elif grund == 'master_aus' %}Master-Schalter aus{% elif grund == 'zeitschaltuhr_aus' %}Zeitschaltuhr deaktiviert{% elif grund == 'nachgeregelt' %}Von Hand geschaltet{% else %}Zeitquelle{% endif %}
 
   # 3. Ist die Automatik überhaupt zuständig? ('egal' = Handbetrieb)
   - alias: Nur handeln, wenn ein Soll-Zustand definiert ist

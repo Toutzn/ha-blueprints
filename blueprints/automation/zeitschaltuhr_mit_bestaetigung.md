@@ -53,10 +53,43 @@ Damit lässt sich „Stecker gezogen = Last aus" und „Betriebsart aus = Hände
 abbilden – zwei Anforderungen, die sich mit nur einem Schalter widersprechen würden. Beide
 leer lassen = die Zeitquellen regieren immer, ohne Übersteuerung.
 
+## Schaltrichtung: Schaltuhr oder Sperre
+
+Normalerweise geben die Zeitquellen beide Richtungen vor: Fenster auf → ein, Fenster zu →
+aus. Mit der **Schaltrichtung** lässt sich eine Richtung abschalten, und aus derselben
+Mechanik wird etwas anderes:
+
+| Richtung | Quelle `on` | Quelle `off` | Wofür |
+|---|---|---|---|
+| **Beides** (Default) | schaltet ein | schaltet aus | Die klassische Zeitschaltuhr |
+| **Nur ausschalten** | tut nichts | schaltet aus | Sperre: im Fenster frei, außerhalb konsequent aus |
+| **Nur einschalten** | schaltet ein | tut nichts | Automatik schaltet an, du schaltest aus |
+
+Das typische Beispiel für *nur ausschalten* ist Außenlicht: tagsüber hat es nichts zu
+suchen, nachts soll es aber ganz normal von Hand bedienbar sein. Die Zeitquelle ist dann
+schlicht ein Binärsensor „es ist dunkel"; wer tagsüber einschaltet, bekommt das Licht
+umgehend wieder ausgeschaltet, und was morgens noch brennt, geht mit dem Sonnenaufgang aus.
+
+Die Richtung betrifft **nur die Zeitquellen**. Master-Schalter und Betriebsart behalten ihr
+eigenes Verhalten – ein dort eingestelltes Zwangs-Aus greift unabhängig davon weiter. Sonst
+ließe sich die „Stecker gezogen"-Regel unbemerkt aushebeln.
+
+## Sofort nachregeln
+
+Ohne Zutun merkt die Automation erst beim nächsten Nachprüf-Tick, dass jemand von Hand
+geschaltet hat – im Standardintervall also bis zu fünf Minuten später. Die Option **Sofort
+nachregeln, wenn fremd geschaltet wird** horcht zusätzlich auf die Ziel-Entitäten selbst
+und bewertet die Lage augenblicklich neu. Erfasst wird jedes Schalten: Wandschalter,
+App, Szene, Sprachassistent.
+
+Für eine Sperre ist das der eigentliche Unterschied zwischen „das Licht geht sofort wieder
+aus" und „das Licht brennt noch ein paar Minuten". Für eine gewöhnliche Zeitschaltuhr ist
+die Option meist überflüssig – deshalb ist sie aus.
+
 ## Ablauf
 
 ```
-Trigger (Zeitquelle / Schalter / Neustart / zyklisch)
+Trigger (Zeitquelle / Schalter / Ziel / Neustart / zyklisch)
         ▼
 alle Entscheidungs-Eingaben mit brauchbarem Zustand ?
         │                  ──nein──▶  ENDE, keine Meldung
@@ -71,7 +104,8 @@ Zeitschaltuhr aktiv on ?   ──nein──▶  Verhalten bei Zeitschaltuhr aus
         ja
         ▼
 Soll = Zeitquellen, ODER/UND-verknüpft (on / off)
-        │
+        │                             durch die Schaltrichtung ggf. auf
+        │                             „egal" gesetzt (Sperre)
         └──────────┬─────────────────  Handbetrieb ▶ ENDE, keine Meldung
                    ▼
            Ist == Soll ?  ──ja──▶  ENDE, keine Meldung
@@ -93,6 +127,7 @@ Soll = Zeitquellen, ODER/UND-verknüpft (on / off)
 |---|---|---|---|
 | **Zeitquellen** | ja | – | Eine oder mehrere Entitäten mit `on`/`off`, die den Soll-Zustand vorgeben |
 | **Verknüpfung mehrerer Zeitquellen** | nein | ODER | *ODER* = eine `on` genügt · *UND* = alle müssen `on` sein |
+| **Schaltrichtung** | nein | Beides | *Beides* · *Nur ausschalten* (Sperre) · *Nur einschalten*. Betrifft nur die Zeitquellen. |
 | **Master-Schalter** | nein | – | Oberste Ebene, „der Stecker". Alle müssen `on` sein. Hat Vorrang vor der Betriebsart. |
 | **Verhalten bei ausgeschaltetem Master** | nein | Zwangs-Aus | *Zwangs-Aus* = Ziele werden ausgeschaltet · *Handbetrieb* = Automatik hält sich raus |
 | **Zeitschaltuhr aktiv** | nein | – | Betriebsart-Schalter. Leer = kein Handbetrieb, Zeitquellen regieren immer. |
@@ -102,6 +137,7 @@ Soll = Zeitquellen, ODER/UND-verknüpft (on / off)
 | **Maximale Schaltversuche** | nein | 5 | Wiederholt nur für die Entitäten, die noch nicht reagiert haben |
 | **Zyklische Nachprüfung aktiv** | nein | ein | Korrigiert Abweichungen laufend |
 | **Intervall der Nachprüfung** | nein | 5 min | `/1`, `/5`, `/15` oder `/30` |
+| **Sofort nachregeln, wenn fremd geschaltet wird** | nein | aus | Horcht auf die Ziel-Entitäten selbst, statt bis zum nächsten Nachprüf-Tick zu warten |
 | **Push bei Erfolg an diese Geräte** | nein | – | Geräte mit HA-App, die bei erfolgreichem Schalten einen Push erhalten. Leer = kein Push. |
 | **Push bei Fehlschlag an diese Geräte** | nein | – | Dasselbe für den Fehlerfall. Leer = kein Push. |
 | **Titel der Push-Benachrichtigung** | nein | `Zeitschaltuhr` | Überschrift der Meldung |
@@ -138,7 +174,7 @@ Telegram, was auch immer. Nutzbare Variablen:
 | Variable | Inhalt |
 |---|---|
 | `soll_zustand` | `on` oder `off` |
-| `grund` | `zeitquelle`, `master_aus`, `zeitschaltuhr_aus` oder `unbekannt` |
+| `grund` | `zeitquelle`, `nachgeregelt`, `master_aus`, `zeitschaltuhr_aus` oder `unbekannt` |
 | `grund_text` | Dasselbe im Klartext, z. B. `Master-Schalter aus` |
 | `ziel_liste` | Alle konfigurierten Ziel-Entitäten |
 | `restliche` | Erreichbare Entitäten, die den Soll-Zustand **nicht** erreicht haben |
@@ -171,19 +207,25 @@ und zwar an dem Ende, an dem man gerade nicht hinschaut.
 
 Weglassen darf man sie nur, wenn man wirklich die **ganze** Dunkelphase will.
 
-### Die fünf Muster
+### Die sechs Muster
 
 | An | Aus | Zustandstemplate |
 |---|---|---|
 | Uhrzeit | Uhrzeit | kein Template – `schedule.*`-Helfer nehmen |
 | Uhrzeit abends | Sonnenaufgang | `{{ now() >= today_at('23:00') or (now() < today_at('12:00') and state_attr('sun.sun','elevation') < 0) }}` |
 | Sonnenuntergang | Uhrzeit abends | `{{ today_at('12:00') <= now() < today_at('23:00') and state_attr('sun.sun','elevation') < -2 }}` |
+| Sonnenuntergang | Uhrzeit nach Mitternacht | `{{ (today_at('12:00') <= now() and state_attr('sun.sun','elevation') < -2) or now() < today_at('01:00') }}` |
 | Sonnenuntergang | Sonnenaufgang | `{{ state_attr('sun.sun','elevation') < -2 }}` |
 | Uhrzeit morgens | Sonnenaufgang | `{{ today_at('06:00') <= now() < today_at('12:00') and state_attr('sun.sun','elevation') < 0 }}` |
 
-Nur das zweite Muster ist ein **ODER** – es läuft über Mitternacht, und die beiden
-Tageshälften müssen getrennt beschrieben werden. Alle anderen sind UND-Verknüpfungen
-innerhalb eines Tages.
+**ODER** sind genau die beiden Muster, die über Mitternacht laufen – dort müssen die beiden
+Tageshälften getrennt beschrieben werden. Alle übrigen sind UND-Verknüpfungen innerhalb
+eines Tages.
+
+Beim vierten Muster (Sonnenuntergang → Uhrzeit nach Mitternacht) fällt auf, dass die
+Morgenhälfte **ohne** Sonnenbedingung auskommt: bis 01:00 ist es in unseren Breiten
+ohnehin dunkel, und der Sonnenstand würde die Grenze nur unscharf machen. Die
+Tageshälften-Klammer steckt hier in `today_at('12:00') <= now()` auf der Abendseite.
 
 Beim letzten Muster ist zu bedenken, dass es im Sommer **gar nicht** schaltet: geht die
 Sonne vor 06:00 auf, ist das Fenster leer. Das ist richtig so, überrascht aber, wenn man
@@ -283,16 +325,49 @@ Daraus ergibt sich:
 | an | aus | Handbetrieb – Zustand bleibt, freies Schalten (z. B. Pumpe für die Heizung) |
 | aus | egal | Saisonende: Pumpe wird ausgeschaltet, mit Meldung |
 
-## Beispielkonfiguration: Weihnachtsbaum draußen
+## Beispielkonfiguration: Gartenlicht nur bei Dunkelheit
 
-Kein Handbetrieb, kein Master – nur Zeitquelle und Ziel:
+Keine Schaltuhr, sondern eine Sperre: nachts bedienst du das Licht ganz normal von Hand,
+tagsüber lässt die Automation es nicht zu, und was morgens noch brennt, geht mit dem
+Sonnenaufgang aus.
+
+Ein Helfer genügt – Template-Binärsensor, Zustand `{{ state_attr('sun.sun','elevation') < -2 }}`
+(Muster *Sonnenuntergang → Sonnenaufgang*, hier ohne Tageshälften-Klammer, weil genau die
+ganze Dunkelphase gemeint ist):
 
 | Feld | Wert |
 |---|---|
-| Zeitquellen | `binary_sensor.dunkel_und_zivile_zeit` (Rezept oben) |
+| Zeitquellen | `binary_sensor.es_ist_dunkel` |
+| Schaltrichtung | **Nur ausschalten** |
 | Master-Schalter | *leer* |
 | Zeitschaltuhr aktiv | *leer* |
+| Zu schaltende Entitäten | die Gartenlichter |
+| Sofort nachregeln | **ein** – sonst brennt das Licht bis zum nächsten Nachprüf-Tick |
+| Zyklische Nachprüfung | ein, Intervall `/5` |
+| Push bei Erfolg | *leer* – sonst meldet sich jeder Fehlgriff aufs Handy |
+| Push bei Fehlschlag | eigenes Handy |
+
+Warum das ohne Master und ohne Betriebsart auskommt: „nur ausschalten" heißt, dass die
+Automatik im Fenster gar keinen Soll-Zustand hat. Handbetrieb ist damit der Normalfall und
+braucht keinen eigenen Schalter.
+
+Soll das Licht zeitweise auch nachts gesperrt sein (Urlaub, Nachtruhe), kommt ein
+`input_boolean` als **Master-Schalter** mit Verhalten *Zwangs-Aus* dazu – der greift
+unabhängig von der Schaltrichtung.
+
+## Beispielkonfiguration: Weihnachtsbeleuchtung draußen
+
+Hier soll wirklich geschaltet werden: an bei Sonnenuntergang, aus um 01:00. Kein
+Handbetrieb, kein Master – nur Zeitquelle und Ziel:
+
+| Feld | Wert |
+|---|---|
+| Zeitquellen | `binary_sensor.aussenbeleuchtung_fenster` – Muster *Sonnenuntergang → Uhrzeit nach Mitternacht* mit `today_at('01:00')` |
+| Schaltrichtung | Beides |
+| Master-Schalter | *leer* (oder ein `input_boolean.weihnachtszeit` mit Zwangs-Aus, dann endet die Saison mit einem Klick) |
+| Zeitschaltuhr aktiv | *leer* |
 | Zu schaltende Entitäten | `switch.tannenbaum_aussen` |
+| Sofort nachregeln | aus – hier soll die Uhr regieren, nicht gegen den Nutzer arbeiten |
 | Push bei Fehlschlag | eigenes Handy |
 | Push bei Erfolg | *leer* – zweimal täglich eine Meldung will man nicht |
 | Fehlermeldungen bei der Nachprüfung | unterdrücken – die Steckdose im Garten fällt im Winter öfter aus |
@@ -306,6 +381,7 @@ angeht, und meldet, wenn die Steckdose im Garten gar nicht mehr reagiert.
 |---|---|---|
 | `zeitquelle` | `state` auf die Zeitquellen, `to: "on"` / `to: "off"` | Regulärer Schaltzeitpunkt |
 | `schalter` | `state` auf Master-Schalter und Betriebsart, `to: ["on", "off"]` | Sofortige Neubewertung |
+| `ziel` | `state` auf die Ziel-Entitäten, `to: ["on", "off"]` | Fremdes Schalten sofort nachregeln – nur wirksam, wenn die Option eingeschaltet ist |
 | `neustart` | `homeassistant` / `start` | Nach einem Neustart verpasste Schaltzeitpunkte nachholen |
 | `sync` | `time_pattern` | Verlorene Funkbefehle einfangen |
 
@@ -357,6 +433,21 @@ angeht, und meldet, wenn die Steckdose im Garten gar nicht mehr reagiert.
   die Last noch im alten Zustand ist, beide halten sich für zuständig. Der erste schaltet,
   der zweite läuft mit leerer Zielliste durch und meldet trotzdem Erfolg. Ergebnis: **ein
   Schaltvorgang, zwei Erfolgsmeldungen**, beide mit „1 Schaltversuch".
+- **Die Schaltrichtung wirkt nur auf die Zeitquellen-Ebene.** Master-Schalter und
+  Betriebsart haben ihr eigenes, ausdrücklich eingestelltes Verhalten; würde die Richtung
+  auch darauf wirken, ließe sich ein Zwangs-Aus über eine ganz anderslautende Einstellung
+  aushebeln. Ein „egal" aus der Richtung heißt deshalb nur: *die Zeitquellen geben für
+  diese Richtung nichts vor*.
+- **Der Ziel-Trigger ist immer vorhanden, seine Verarbeitung ist die Option.** Ein
+  Trigger-Block lässt sich in einem Blueprint nicht per Eingabe weglassen. Die Prüfung
+  steht deshalb als erster Aktionsschritt neben der Nachprüf-Prüfung – zulässig, weil
+  `mode: queued` einen laufenden Durchlauf nicht abbricht, sondern nur einreiht. Bei
+  `mode: restart` müsste sie in `conditions:` (siehe das Bewegungslicht).
+- **Kein Kontextfilter am Ziel-Trigger.** Man könnte über
+  `trigger.to_state.context.parent_id is none` auf rein manuelles Schalten filtern. Genau
+  das wäre hier falsch: eine Szene oder ein Sprachassistent, der das Licht am Tag
+  einschaltet, soll ebenso korrigiert werden. Preis ist ein Folgelauf nach jedem eigenen
+  Schaltvorgang, der sofort an `Ist == Soll` abbricht.
 - **Zeitquelle als Zustand, nicht als Trigger.** Nur so kann der Blueprint nach einem
   Neustart nachholen, was er verpasst hat. Ein eingebauter Sonnen-Modus hätte die
   Zustandsmatrix vervielfacht; delegiert an einen Template-Helfer bleibt der Blueprint
@@ -374,6 +465,11 @@ angeht, und meldet, wenn die Steckdose im Garten gar nicht mehr reagiert.
   des Zeitfensters von Hand einschaltet, wird von der zyklischen Nachprüfung innerhalb des
   eingestellten Intervalls wieder überstimmt. Richtige Reihenfolge also: **erst die
   Betriebsart ausschalten, dann von Hand schalten.**
+- **Sofortiges Nachregeln füllt den Trace-Puffer.** Jeder eigene Schaltvorgang löst den
+  Ziel-Trigger mit aus. Der Folgelauf findet Soll = Ist und endet sofort, belegt aber einen
+  der standardmäßig **5** gespeicherten Traces – der interessante Lauf ist dann schneller
+  verdrängt. Wer viel in Traces liest, setzt in der Automation
+  `trace: { stored_traces: 25 }`.
 - Stille kann drei Dinge bedeuten: Automatik nicht zuständig, Zustand stimmte schon, oder
   die Automation lief nicht. Unterscheiden lässt sich das nur über die Traces.
 - Ein dauerhaft nicht erreichbares Ziel wird **einmal** gemeldet – beim nächsten echten
