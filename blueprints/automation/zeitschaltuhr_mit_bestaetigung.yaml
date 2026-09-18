@@ -5,77 +5,183 @@ blueprint:
   homeassistant:
     min_version: "2024.10.0"
   description: >-
-    Schaltet beliebige Entitäten nach einer oder mehreren Zeitquellen ein und aus – und
-    prüft danach nach, ob es wirklich geklappt hat.
+    Schaltet Entitäten nach Sonnenstand, Uhrzeit oder eigenen Bedingungen – und prüft
+    nach, ob der Befehl wirklich angekommen ist.
 
 
-    **Zeitquelle** ist jede Entität mit `on`/`off`: ein `schedule.*`-Helfer, ein
-    Template-Binärsensor für Sonnenauf-/-untergang, eine Kalender-Entität. Der Blueprint
-    braucht einen abfragbaren Zustand, kein Ereignis – nur so kann er nach einem
-    Neustart nachholen, was er verpasst hat.
+    **Zeitfenster:** Beginn und Ende werden direkt hier eingestellt – Sonnenuntergang
+    oder feste Uhrzeit, jeweils mit Versatz in Minuten. Über Mitternacht hinweg ist
+    ausdrücklich erlaubt.
 
 
-    **Ablauf:** Master-Schalter an? → Zeitschaltuhr aktiv? → sagen die Zeitquellen „an"
-    oder „aus"? → weicht der Ist-Zustand vom Soll ab? → schalten, warten, nachprüfen,
-    bei Bedarf wiederholen → Erfolg oder Fehlschlag melden.
+    **Schaltrichtung:** Das Fenster darf auch nur in eine Richtung wirken. „Nur
+    ausschalten" macht daraus eine Sperre – im Fenster schaltest du frei, außerhalb wird
+    konsequent abgeschaltet.
 
 
-    **Selbstheilend:** Zusätzlich zu den Schaltzeitpunkten prüft die Automation
-    zyklisch und nach jedem Home-Assistant-Neustart nach. Damit fallen verlorene
-    Funkbefehle, kurz nicht erreichbare Aktoren und verpasste Trigger (Neustart,
-    Reload) nicht mehr durchs Raster.
+    **Schaltbestätigung:** Nach jedem Befehl wird der Ist-Zustand zurückgelesen und
+    gezielt für die Entitäten wiederholt, die nicht reagiert haben. Zusätzlich prüft die
+    Automation zyklisch und nach jedem Neustart nach – verlorene Funkbefehle, kurz nicht
+    erreichbare Aktoren und verpasste Schaltzeitpunkte fallen damit nicht durchs Raster.
 
 
-    **Zwei Ebenen:** Der *Master-Schalter* ist der Stecker – ist er aus, gilt sein
-    eigenes Verhalten und hat Vorrang. Die *Zeitschaltuhr aktiv* ist die Betriebsart –
-    ist sie aus, gilt ihr eigenes Verhalten. Typische Kombination: Master aus =
-    Zwangs-Aus, Betriebsart aus = Handbetrieb.
-
-
-    **Meldungen:** Für Push aufs Handy genügt es, die Geräte auszuwählen – getrennt
-    für Erfolg und Fehlschlag. Zusätzlich lassen sich beliebige eigene Aktionen für
-    beide Fälle hinterlegen.
-
-
-    **Schaltrichtung:** Die Zeitquellen dürfen auch nur in eine Richtung wirken.
-    „Nur ausschalten" macht aus der Zeitschaltuhr eine Sperre: innerhalb des Fensters
-    schaltest du frei, außerhalb wird konsequent abgeschaltet. „Nur einschalten" ist
-    das Gegenstück.
-
-
-    **Wichtig zur Nachprüfung:** Solange die Zeitschaltuhr aktiv ist, setzt die
-    zyklische Nachprüfung den Soll-Zustand auch gegen manuelles Schalten durch.
-    Für Handbetrieb die Betriebsart ausschalten – oder die Nachprüfung deaktivieren.
+    **Von Hand übersteuern:** Zwei optionale Ebenen. Der Master-Schalter ist der Stecker
+    und hat Vorrang; die Betriebsart entscheidet, ob die Automatik überhaupt regiert.
   domain: automation
 
   input:
-    zeit:
-      name: Zeitsteuerung
-      icon: mdi:calendar-clock
+    # =====================================================================
+    fenster:
+      name: 1 · Wann geschaltet werden soll
+      icon: mdi:weather-sunset
       collapsed: false
       input:
-        zeitquellen:
-          name: Zeitquellen
+        fenster_start:
+          name: Einschalten ab
           description: >-
-            Eine oder mehrere Entitäten, deren Zustand den Soll-Zustand vorgibt:
-            `on` = Ziel-Entitäten sollen an sein, `off` = aus.
+            Der Beginn des Zeitfensters.
 
 
-            Üblich ist ein `schedule.*`-Helfer (Wochentage und mehrere Blöcke pro Tag
-            konfigurierst du direkt darin). Es geht aber jede Entität mit `on`/`off` –
-            etwa ein Template-Binärsensor für Sonnenauf- und -untergang oder eine
-            Kalender-Entität.
+            „Kein Fenster" heißt: die Zeit spielt keine Rolle, es zählen nur die
+            Bedingungen aus Abschnitt 2.
+          default: keins
+          selector:
+            select:
+              mode: list
+              options:
+                - label: "Kein Fenster"
+                  value: keins
+                - label: "Sonnenuntergang"
+                  value: sonnenuntergang
+                - label: "Feste Uhrzeit"
+                  value: uhrzeit
+
+        fenster_su_offset:
+          name: Versatz zum Sonnenuntergang
+          description: >-
+            Minuten vor (negativ) oder nach (positiv) dem Sonnenuntergang.
+            Trage die Minuten im Feld *Minuten* ein; das Minuszeichen macht daraus
+            „vorher". −30 = eine halbe Stunde vor Sonnenuntergang, in der Dämmerung.
+            +20 = zwanzig Minuten danach, wenn es schon dunkler ist.
 
 
-            **Leer lassen**, wenn das eingebaute Zeitfenster unten genügt – Sonnenuntergang,
-            Sonnenaufgang und feste Uhrzeiten brauchen hier nichts.
+            Nur wirksam, wenn oben „Sonnenuntergang" gewählt ist.
+          default:
+            hours: 0
+            minutes: 0
+            seconds: 0
+          selector:
+            duration:
+              enable_day: false
+              allow_negative: true
+
+        fenster_start_uhrzeit:
+          name: Uhrzeit für den Beginn
+          description: >-
+            Nur wirksam, wenn oben „Feste Uhrzeit" gewählt ist.
+          default: "23:00:00"
+          selector:
+            time:
+
+        fenster_ende:
+          name: Ausschalten ab
+          description: >-
+            Das Ende des Zeitfensters.
 
 
-            WICHTIG: Eine Quelle muss einen abfragbaren Zustand haben, kein Ereignis.
-            `sun.sun` selbst passt NICHT (dessen Zustand ist `above_horizon` /
-            `below_horizon`), ebenso wenig `person` oder `device_tracker` (`home` /
-            `not_home`) – dafür einen Template-Binärsensor anlegen. Rezepte stehen in
-            der Doku.
+            Beide Felder – Beginn und Ende – müssen gesetzt sein. Steht eines auf „Kein
+            Fenster", wird das ganze Fenster ignoriert.
+          default: keins
+          selector:
+            select:
+              mode: list
+              options:
+                - label: "Kein Fenster"
+                  value: keins
+                - label: "Sonnenaufgang"
+                  value: sonnenaufgang
+                - label: "Feste Uhrzeit"
+                  value: uhrzeit
+
+        fenster_sa_offset:
+          name: Versatz zum Sonnenaufgang
+          description: >-
+            Minuten vor (negativ) oder nach (positiv) dem Sonnenaufgang.
+            Trage die Minuten im Feld *Minuten* ein; das Minuszeichen macht daraus
+            „vorher". +30 = eine halbe Stunde nach Sonnenaufgang, wenn es sicher hell
+            ist. −20 = zwanzig Minuten vorher, in der Morgendämmerung.
+
+
+            Nur wirksam, wenn oben „Sonnenaufgang" gewählt ist.
+          default:
+            hours: 0
+            minutes: 0
+            seconds: 0
+          selector:
+            duration:
+              enable_day: false
+              allow_negative: true
+
+        fenster_ende_uhrzeit:
+          name: Uhrzeit für das Ende
+          description: >-
+            Nur wirksam, wenn oben „Feste Uhrzeit" gewählt ist. Liegt sie vor dem
+            Beginn, läuft das Fenster über Mitternacht – „ab Sonnenuntergang, aus um
+            01:00" ist also genau so gemeint.
+          default: "01:00:00"
+          selector:
+            time:
+
+        schaltrichtung:
+          name: Schaltrichtung
+          description: >-
+            *Beides* – die gewöhnliche Zeitschaltuhr: im Fenster ein, außerhalb aus.
+
+
+            *Nur ausschalten* – eine Sperre: im Fenster bleibt das Schalten dir
+            überlassen, außerhalb wird konsequent abgeschaltet. Für Außenlicht, das
+            tagsüber nichts zu suchen hat.
+
+
+            *Nur einschalten* – die Automatik schaltet ein, das Ausschalten bleibt dir
+            überlassen.
+
+
+            Master-Schalter und Betriebsart (Abschnitt 4) behalten ihr eigenes
+            Verhalten – ein dort eingestelltes Zwangs-Aus greift unabhängig hiervon.
+          default: beides
+          selector:
+            select:
+              mode: list
+              options:
+                - label: "Beides – ein und aus"
+                  value: beides
+                - label: "Nur ausschalten – Sperre außerhalb des Fensters"
+                  value: nur_ausschalten
+                - label: "Nur einschalten – Ausschalten bleibt dir überlassen"
+                  value: nur_einschalten
+
+    # =====================================================================
+    bedingungen:
+      name: 2 · Zusätzliche Bedingungen
+      icon: mdi:playlist-check
+      collapsed: true
+      input:
+        zeitquellen:
+          name: Weitere Zeitquellen (optional)
+          description: >-
+            Für alles, was das Zeitfenster oben nicht abdeckt: Wochentage und mehrere
+            Blöcke pro Tag (`schedule.*`-Helfer), Anwesenheit, Kalender, eigene
+            Template-Binärsensoren.
+
+
+            Jede Entität mit `on`/`off` ist erlaubt. `on` heißt „soll an sein".
+            **Leer lassen**, wenn das Zeitfenster genügt.
+
+
+            Nicht geeignet sind Entitäten ohne `on`/`off`-Zustand – `sun.sun`
+            (`above_horizon`), `person.*` oder `device_tracker.*` (`home`). Dafür einen
+            Template-Binärsensor anlegen; Rezepte stehen in der Doku.
           default: []
           selector:
             entity:
@@ -92,148 +198,76 @@ blueprint:
                 - domain: automation
 
         zeitquellen_verknuepfung:
-          name: Verknüpfung mehrerer Zeitquellen
+          name: Verknüpfung
           description: >-
-            Nur relevant, wenn oben mehr als eine Quelle gewählt ist. ODER = zwei
-            Zeitfenster addieren. UND = Bedingungen kombinieren, z. B. Zeitfenster
-            zusammen mit Anwesenheit.
+            Wie Zeitfenster und Zeitquellen zusammenwirken. Das Fenster zählt dabei wie
+            eine weitere Quelle.
+
+
+            *ODER* addiert Zeiträume: eine Quelle `on` genügt. *UND* kombiniert
+            Bedingungen: alle müssen `on` sein – etwa „nur im Fenster **und** nur wenn
+            jemand zu Hause ist".
           default: oder
           selector:
             select:
               mode: list
               options:
-                - label: "ODER – eine Quelle on genügt"
+                - label: "ODER – eine genügt"
                   value: oder
-                - label: "UND – alle Quellen müssen on sein"
+                - label: "UND – alle müssen zutreffen"
                   value: und
 
-        schaltrichtung:
-          name: Schaltrichtung
-          description: >-
-            Ob die Zeitquellen beide Richtungen vorgeben dürfen oder nur eine.
-
-
-            „Nur ausschalten" macht aus der Zeitschaltuhr eine Sperre: im Fenster
-            bleibt das Schalten dir überlassen, außerhalb wird konsequent
-            abgeschaltet. Typisch für Außenlicht, das tagsüber nichts zu suchen hat –
-            die Zeitquelle ist dann ein Binärsensor „es ist dunkel".
-
-
-            „Nur einschalten" ist das Gegenstück: die Automatik schaltet ein und
-            überlässt dir das Ausschalten.
-
-
-            Betrifft **nur** die Zeitquellen. Master-Schalter und Betriebsart behalten
-            ihr eigenes Verhalten – ein dort eingestelltes Zwangs-Aus greift weiterhin.
-          default: beides
-          selector:
-            select:
-              mode: list
-              options:
-                - label: "Beides – Zeitquellen schalten ein und aus"
-                  value: beides
-                - label: "Nur ausschalten – außerhalb des Fensters wird abgeschaltet"
-                  value: nur_ausschalten
-                - label: "Nur einschalten – im Fenster wird eingeschaltet"
-                  value: nur_einschalten
-
-    fenster:
-      name: Eingebautes Zeitfenster
-      icon: mdi:weather-sunset
+    # =====================================================================
+    lasten:
+      name: 3 · Was geschaltet wird
+      icon: mdi:power-plug-outline
       collapsed: false
       input:
-        fenster_start:
-          name: Einschalten ab
+        ziele:
+          name: Zu schaltende Entitäten
           description: >-
-            Der Beginn des Fensters. „Kein Fenster" heißt: es zählen nur die Zeitquellen
-            oben.
-
-
-            Sonnenuntergang und Sonnenaufgang werden über die Sonnenhöhe bestimmt, nicht
-            über eine Uhrzeit – damit wandert die Schaltzeit über das Jahr korrekt mit.
-          default: keins
+            Bewusst Entitäten statt Geräte: nur so lässt sich der Ist-Zustand
+            zurücklesen und damit überhaupt prüfen, ob geschaltet wurde.
           selector:
-            select:
-              mode: list
-              options:
-                - label: "Kein Fenster – nur die Zeitquellen oben"
-                  value: keins
-                - label: "Sonnenuntergang"
-                  value: sonnenuntergang
-                - label: "Feste Uhrzeit"
-                  value: uhrzeit
+            entity:
+              multiple: true
+              filter:
+                - domain: switch
+                - domain: light
+                - domain: input_boolean
+                - domain: fan
+                - domain: media_player
 
-        fenster_start_uhrzeit:
-          name: Uhrzeit für den Beginn
+        ziel_trigger:
+          name: Sofort nachregeln, wenn fremd geschaltet wird
           description: >-
-            Nur wirksam, wenn oben „Feste Uhrzeit" gewählt ist.
-          default: "23:00:00"
+            Horcht auf die Ziel-Entitäten selbst. Schaltet jemand von Hand, per Szene
+            oder Sprachassistent, bewertet die Automation die Lage augenblicklich neu –
+            statt bis zum nächsten Nachprüf-Durchlauf zu warten.
+
+
+            Für eine Sperre („nur ausschalten") der Unterschied zwischen „geht sofort
+            wieder aus" und „brennt noch ein paar Minuten". Für eine gewöhnliche
+            Zeitschaltuhr meist überflüssig.
+          default: false
           selector:
-            time:
+            boolean:
 
-        fenster_ende:
-          name: Ausschalten ab
-          description: >-
-            Das Ende des Fensters. Beide Felder – Beginn und Ende – müssen gesetzt sein,
-            sonst gilt das Fenster als nicht konfiguriert und wird ignoriert.
-
-
-            Über Mitternacht ist ausdrücklich erlaubt: „ab Sonnenuntergang, aus um 01:00"
-            oder „ab 23:00, aus bei Sonnenaufgang" werden richtig gerechnet.
-          default: keins
-          selector:
-            select:
-              mode: list
-              options:
-                - label: "Kein Fenster – nur die Zeitquellen oben"
-                  value: keins
-                - label: "Sonnenaufgang"
-                  value: sonnenaufgang
-                - label: "Feste Uhrzeit"
-                  value: uhrzeit
-
-        fenster_ende_uhrzeit:
-          name: Uhrzeit für das Ende
-          description: >-
-            Nur wirksam, wenn oben „Feste Uhrzeit" gewählt ist. Eine Uhrzeit vor 12:00
-            wird als „nach Mitternacht" verstanden, das Fenster läuft dann über den
-            Tageswechsel.
-          default: "01:00:00"
-          selector:
-            time:
-
-        daemmerung_schwelle:
-          name: Dämmerungsschwelle
-          description: >-
-            Ab welcher Sonnenhöhe es als dunkel gilt – der Feinregler für
-            Sonnenuntergang und Sonnenaufgang. `0` ist der geometrische Sonnenauf- und
-            -untergang; negative Werte schieben nach hinten in die Dämmerung.
-
-
-            Anhaltspunkte für Mitteleuropa: `0` = exakt Sonnenuntergang,
-            `-2` = kurz danach (Vorgabe), `-6` = Ende der bürgerlichen Dämmerung,
-            es ist deutlich dunkel.
-          default: -2
-          selector:
-            number:
-              min: -12
-              max: 6
-              step: 0.5
-              unit_of_measurement: "°"
-              mode: slider
-
+    # =====================================================================
     schalter:
-      name: Schalter und Betriebsart
+      name: 4 · Von Hand übersteuern
       icon: mdi:toggle-switch-outline
-      collapsed: false
+      collapsed: true
       input:
         master_entitaeten:
           name: Master-Schalter (optional)
           description: >-
-            Die oberste Ebene – sinnbildlich der Stecker der Zeitschaltuhr. Alle hier
-            gewählten Entitäten müssen `on` sein, damit überhaupt etwas läuft, z. B.
-            ein `input_boolean.poolsaison`. Hat Vorrang vor der Betriebsart. Leer
-            lassen, wenn nicht benötigt.
+            Die oberste Ebene – sinnbildlich der Stecker. Alle hier gewählten Entitäten
+            müssen `on` sein, damit überhaupt etwas läuft, z. B.
+            `input_boolean.poolsaison`. Hat Vorrang vor allem anderen.
+
+
+            Leer lassen, wenn nicht benötigt.
           default: []
           selector:
             entity:
@@ -245,16 +279,15 @@ blueprint:
                 - domain: schedule
 
         verhalten_bei_master_aus:
-          name: Verhalten bei ausgeschaltetem Master
+          name: … und wenn der Master aus ist?
           description: >-
-            Was passiert, wenn ein Master-Schalter auf `off` steht. „Stecker gezogen"
-            bedeutet üblicherweise, dass die Last aus soll.
+            „Stecker gezogen" bedeutet üblicherweise, dass die Last aus soll.
           default: ausschalten
           selector:
             select:
               mode: list
               options:
-                - label: "Zwangs-Aus – Ziel-Entitäten werden ausgeschaltet"
+                - label: "Zwangs-Aus – Ziele werden ausgeschaltet"
                   value: ausschalten
                 - label: "Handbetrieb – Automatik hält sich komplett raus"
                   value: handbetrieb
@@ -263,12 +296,12 @@ blueprint:
           name: Zeitschaltuhr aktiv (optional)
           description: >-
             Die Betriebsart. Alle hier gewählten Entitäten müssen `on` sein, damit die
-            Zeitquellen regieren; sonst gilt das unten gewählte Verhalten.
+            Automatik regiert.
 
 
-            Leer lassen, wenn es keinen Handbetrieb geben soll – dann läuft die
-            Automatik immer nach den Zeitquellen. Sinnvoll z. B. für eine reine
-            Beleuchtungsschaltung, die nie von Hand übersteuert wird.
+            Leer lassen, wenn es keinen Handbetrieb geben soll. Bei Schaltrichtung „nur
+            ausschalten" ist das ohnehin der Normalfall – innerhalb des Fensters hält
+            sich die Automatik schon von selbst heraus.
           default: []
           selector:
             entity:
@@ -280,10 +313,10 @@ blueprint:
                 - domain: schedule
 
         verhalten_bei_zeitschaltuhr_aus:
-          name: Verhalten bei deaktivierter Zeitschaltuhr
+          name: … und wenn die Betriebsart aus ist?
           description: >-
-            Was passiert, wenn die Betriebsart auf `off` steht. Handbetrieb heißt: der
-            aktuelle Zustand bleibt unangetastet und du schaltest frei von Hand.
+            Handbetrieb heißt: der aktuelle Zustand bleibt unangetastet und du schaltest
+            frei.
           default: handbetrieb
           selector:
             select:
@@ -291,36 +324,20 @@ blueprint:
               options:
                 - label: "Handbetrieb – Automatik hält sich komplett raus"
                   value: handbetrieb
-                - label: "Zwangs-Aus – Ziel-Entitäten werden ausgeschaltet"
+                - label: "Zwangs-Aus – Ziele werden ausgeschaltet"
                   value: ausschalten
 
-    schalten:
-      name: Schalten und Nachprüfen
+    # =====================================================================
+    bestaetigung:
+      name: 5 · Schaltbestätigung und Selbstheilung
       icon: mdi:check-decagram-outline
-      collapsed: false
+      collapsed: true
       input:
-        ziele:
-          name: Zu schaltende Entitäten
-          description: >-
-            Diese Entitäten werden geschaltet und einzeln auf Erfolg geprüft.
-            Bewusst Entitäten statt Geräte: nur so lässt sich der Ist-Zustand
-            zurücklesen.
-          selector:
-            entity:
-              multiple: true
-              filter:
-                - domain: switch
-                - domain: light
-                - domain: input_boolean
-                - domain: fan
-                - domain: media_player
-
         pruefung_verzoegerung:
           name: Wartezeit vor der Nachprüfung
           description: >-
-            Wie lange nach dem Schaltbefehl gewartet wird, bevor der Ist-Zustand
-            geprüft wird. Bei Funk-Aktoren (Zigbee, Z-Wave, WLAN) lieber etwas
-            großzügiger.
+            Wie lange nach dem Schaltbefehl gewartet wird, bevor der Ist-Zustand gelesen
+            wird. Bei Funk-Aktoren (Zigbee, Z-Wave, WLAN) lieber großzügiger.
           default: 10
           selector:
             number:
@@ -333,8 +350,7 @@ blueprint:
         max_versuche:
           name: Maximale Schaltversuche
           description: >-
-            Wie oft der Schaltbefehl wiederholt wird, solange der Ist-Zustand nicht
-            passt. Wiederholt wird nur für die Entitäten, die noch nicht reagiert haben.
+            Wiederholt wird nur für die Entitäten, die noch nicht reagiert haben.
           default: 5
           selector:
             number:
@@ -344,20 +360,21 @@ blueprint:
               mode: box
 
         nachpruefung:
-          name: Zyklische Nachprüfung aktiv
+          name: Zyklische Nachprüfung
           description: >-
-            Prüft im Hintergrund laufend, ob Soll- und Ist-Zustand übereinstimmen,
-            und korrigiert Abweichungen. Ausschalten, wenn du manuelles Schalten
-            während des Zeitfensters erlauben willst.
+            Prüft im Hintergrund laufend, ob Soll und Ist übereinstimmen, und korrigiert
+            Abweichungen. Die Automation bricht sofort ab, wenn nichts zu tun ist – ein
+            kurzes Intervall kostet also praktisch keine Leistung.
+
+
+            Ausschalten, wenn manuelles Schalten während des Fensters unangetastet
+            bleiben soll.
           default: true
           selector:
             boolean:
 
         sync_intervall:
           name: Intervall der Nachprüfung
-          description: >-
-            Die Automation bricht sofort ab, wenn keine Abweichung besteht – ein
-            kurzes Intervall kostet also praktisch keine Leistung.
           default: "/5"
           selector:
             select:
@@ -371,39 +388,18 @@ blueprint:
                 - label: Alle 30 Minuten
                   value: "/30"
 
-        ziel_trigger:
-          name: Sofort nachregeln, wenn fremd geschaltet wird
-          description: >-
-            Horcht zusätzlich auf die Ziel-Entitäten selbst: wird eine davon von Hand,
-            per Szene oder Sprachassistent geschaltet, bewertet die Automation sofort
-            neu, statt bis zum nächsten Nachprüf-Intervall zu warten.
-
-
-            Sinnvoll überall dort, wo die Automatik das letzte Wort haben soll – vor
-            allem bei einer Sperre („nur ausschalten"), die sonst bis zu einem vollen
-            Nachprüf-Intervall hinterherhinkt.
-
-
-            Unabhängig von der zyklischen Nachprüfung; beides lässt sich einzeln
-            an- und abschalten. Zu wissen: jeder eigene Schaltvorgang löst diesen
-            Trigger ebenfalls aus. Der Folgelauf findet Soll = Ist und bricht sofort
-            ab – er belegt aber einen Platz im Trace-Puffer (Standard 5 pro
-            Automation).
-          default: false
-          selector:
-            boolean:
-
+    # =====================================================================
     push:
-      name: Push-Benachrichtigungen
+      name: 6 · Benachrichtigungen aufs Handy
       icon: mdi:cellphone-message
-      collapsed: false
+      collapsed: true
       input:
         push_geraete_erfolg:
-          name: Push bei Erfolg an diese Geräte (optional)
+          name: Push bei Erfolg (optional)
           description: >-
-            Geräte mit installierter Home-Assistant-App, die eine Push-Benachrichtigung
-            erhalten, wenn erfolgreich geschaltet wurde. Leer lassen = kein Push bei
-            Erfolg.
+            Geräte mit installierter Home-Assistant-App. Leer lassen = kein Push bei
+            Erfolg – bei einer Zeitschaltuhr, die zweimal täglich schaltet, meist die
+            bessere Wahl.
           default: []
           selector:
             device:
@@ -411,11 +407,10 @@ blueprint:
               multiple: true
 
         push_geraete_fehler:
-          name: Push bei Fehlschlag an diese Geräte (optional)
+          name: Push bei Fehlschlag (optional)
           description: >-
-            Geräte, die eine Push-Benachrichtigung erhalten, wenn der Schaltbefehl auch
-            nach allen Versuchen nicht angekommen ist. Leer lassen = kein Push bei
-            Fehlschlag.
+            Geräte, die eine Meldung erhalten, wenn der Schaltbefehl auch nach allen
+            Versuchen nicht angekommen ist.
           default: []
           selector:
             device:
@@ -423,32 +418,30 @@ blueprint:
               multiple: true
 
         push_titel:
-          name: Titel der Push-Benachrichtigung
+          name: Titel der Benachrichtigung
           description: >-
-            Erscheint als Überschrift der Meldung. Bei mehreren Automationen aus diesem
-            Blueprint hilft ein sprechender Titel beim Auseinanderhalten, z. B. „Pool".
+            Bei mehreren Automationen aus diesem Blueprint hilft ein sprechender Titel
+            beim Auseinanderhalten, z. B. „Pool" oder „Gartenlicht".
           default: Zeitschaltuhr
           selector:
             text:
 
         fehler_melden:
-          name: Fehlermeldungen bei der zyklischen Nachprüfung
+          name: Fehlermeldungen aus der Nachprüfung
           description: >-
-            Ein dauerhaft nicht erreichbares Gerät – abgestecktes Zwischenstecker-Relais,
-            zigbee2mqtt gestoppt – erzeugt sonst bei jedem Nachprüf-Durchlauf eine neue
-            Meldung, im Standardintervall also alle 5 Minuten.
+            Ein dauerhaft nicht erreichbares Gerät – abgestecktes Relais, zigbee2mqtt
+            gestoppt – erzeugt sonst bei jedem Nachprüf-Durchlauf eine neue Meldung.
 
 
-            „Unterdrücken" meldet nur, wenn ein echtes Ereignis der Auslöser war:
-            Schaltzeitpunkt, Schalter oder Neustart. Korrigiert wird weiterhin bei jedem
-            Durchlauf, und **Erfolgsmeldungen sind nicht betroffen** – die kommen auch aus
-            der Nachprüfung heraus, also genau dann, wenn es endlich geklappt hat.
+            „Unterdrücken" meldet nur, wenn ein echtes Ereignis der Auslöser war.
+            Korrigiert wird weiterhin bei jedem Durchlauf, und Erfolgsmeldungen sind
+            nicht betroffen – die kommen gerade dann, wenn es endlich geklappt hat.
           default: ereignisse
           selector:
             select:
               mode: list
               options:
-                - label: "Unterdrücken – nur bei Schaltzeitpunkt, Schalter oder Neustart"
+                - label: "Unterdrücken – nur bei echten Ereignissen"
                   value: ereignisse
                 - label: "Auch bei jedem Nachprüf-Durchlauf melden"
                   value: immer
@@ -456,30 +449,33 @@ blueprint:
         push_kritisch:
           name: Fehlschlag als kritische Benachrichtigung
           description: >-
-            Lässt den Fehler-Push auch bei stummgeschaltetem oder auf „Nicht stören"
-            gestelltem Telefon durch. Setzt voraus, dass in der Companion-App die
-            Berechtigung für kritische Hinweise erteilt ist. Gilt nur für den
-            Fehlschlag, nie für den Erfolg.
+            Lässt den Fehler-Push auch bei stummem oder auf „Nicht stören" gestelltem
+            Telefon durch. Setzt die entsprechende Berechtigung in der Companion-App
+            voraus. Gilt nie für den Erfolg.
           default: false
           selector:
             boolean:
 
+    # =====================================================================
     meldungen:
-      name: Meldungen
-      icon: mdi:bell-outline
+      name: 7 · Eigene Aktionen
+      icon: mdi:script-text-outline
       collapsed: true
       input:
         aktion_bei_erfolg:
           name: Aktion bei Erfolg
           description: >-
-            Zusätzliche Aktion über den Push oben hinaus – läuft nur, wenn tatsächlich
-            geschaltet wurde und alle Ziel-Entitäten den Soll-Zustand erreicht haben.
-            Die vorgegebene Aktion schreibt lediglich ins HA-Logbuch; wer sie nicht
-            braucht, kann sie löschen.
+            Zusätzlich zum Push oben – läuft nur, wenn tatsächlich geschaltet wurde und
+            alle Ziele den Soll-Zustand erreicht haben. Die Vorgabe schreibt lediglich
+            ins Logbuch und kann gelöscht werden.
+
+
+            **Das ist kein Benachrichtigungsfeld** – für Push aufs Handy ist Abschnitt 6
+            zuständig.
 
 
             Nutzbare Variablen: `soll_zustand` (`on`/`off`), `grund_text` (Auslöser im
-            Klartext), `ziel_liste` (alle Ziele), `versuche` (Anzahl Schaltversuche).
+            Klartext), `ziel_liste`, `versuche`.
           default:
             - action: logbook.log
               data:
@@ -493,13 +489,13 @@ blueprint:
         aktion_bei_fehler:
           name: Aktion bei Fehlschlag
           description: >-
-            Zusätzliche Aktion über den Push oben hinaus – läuft, wenn nach allen
-            Versuchen noch Entitäten den Soll-Zustand nicht erreicht haben. Die
-            vorgegebene Aktion erzeugt die Glocken-Meldung in der HA-Oberfläche.
+            Zusätzlich zum Push oben – läuft, wenn nach allen Versuchen noch Entitäten
+            den Soll-Zustand nicht erreicht haben. Die Vorgabe erzeugt die
+            Glocken-Meldung in der Oberfläche.
 
 
-            Nutzbare Variablen: `soll_zustand`, `grund_text`, `restliche` (Entitäten,
-            die nicht reagiert haben), `versuche`.
+            Nutzbare Variablen: `soll_zustand`, `grund_text`, `restliche` (was nicht
+            reagiert hat), `nicht_erreichbar`, `versuche`.
           default:
             - action: persistent_notification.create
               data:
@@ -546,19 +542,17 @@ triggers:
     to: ["on", "off"]
     id: ziel
 
-  # Kanten des eingebauten Fensters. Die Sonnen-Trigger hängen an der Dämmerungsschwelle,
-  # nicht an "sunset"/"sunrise" - sonst würde eine Schwelle ungleich 0 erst beim nächsten
-  # Nachprüf-Tick wirksam. Die beiden Zeit-Trigger feuern auch, wenn das Fenster gar nicht
-  # benutzt wird; solche Läufe enden beim Soll-Ist-Vergleich, ohne zu schalten.
-  - trigger: numeric_state
-    entity_id: sun.sun
-    attribute: elevation
-    below: !input daemmerung_schwelle
+  # Kanten des eingebauten Fensters: die beiden Sonnenereignisse mit ihrem Versatz und
+  # die beiden eingestellten Uhrzeiten. Alle vier feuern auch, wenn das Fenster gar nicht
+  # benutzt wird - ein Trigger-Block lässt sich nicht per Eingabe weglassen. Solche Läufe
+  # enden beim Soll-Ist-Vergleich, ohne zu schalten und ohne zu melden.
+  - trigger: sun
+    event: sunset
+    offset: !input fenster_su_offset
     id: fenster
-  - trigger: numeric_state
-    entity_id: sun.sun
-    attribute: elevation
-    above: !input daemmerung_schwelle
+  - trigger: sun
+    event: sunrise
+    offset: !input fenster_sa_offset
     id: fenster
   - trigger: time
     at: !input fenster_start_uhrzeit
@@ -589,7 +583,8 @@ variables:
   v_fenster_ende: !input fenster_ende
   v_fenster_start_uhrzeit: !input fenster_start_uhrzeit
   v_fenster_ende_uhrzeit: !input fenster_ende_uhrzeit
-  v_schwelle: !input daemmerung_schwelle
+  v_su_offset: !input fenster_su_offset
+  v_sa_offset: !input fenster_sa_offset
   v_ziel_trigger: !input ziel_trigger
   v_aktiv: !input aktiv_schalter
   v_master: !input master_entitaeten
@@ -633,30 +628,36 @@ actions:
       fenster_konfiguriert: >-
         {{ v_fenster_start != 'keins' and v_fenster_ende != 'keins' }}
 
-      # Liegt "jetzt" im eingebauten Fenster? Sonnenkanten laufen über die Sonnenhöhe,
-      # Uhrzeit-Kanten über today_at(). Die Fälle über Mitternacht sind ODER-Fälle und
-      # müssen je Tageshälfte beschrieben werden - "elevation < x" heißt schließlich
-      # abends wie morgens "dunkel". Die Tageshälften-Klammer ist today_at('12:00').
+      # Der eingestellte Versatz in Sekunden. Der Duration-Selektor liefert ein
+      # Dictionary; eine blanke Zahl (von Hand in die YAML geschrieben) gilt als
+      # Sekunden, wie bei Home Assistants eigenem cv.time_period.
+      o_sonnenuntergang: >-
+        {% set o = v_su_offset %}
+        {{ ((o.hours | int(0)) * 3600 + (o.minutes | int(0)) * 60 + (o.seconds | int(0)))
+           if o is mapping else (o | int(0)) }}
+      o_sonnenaufgang: >-
+        {% set o = v_sa_offset %}
+        {{ ((o.hours | int(0)) * 3600 + (o.minutes | int(0)) * 60 + (o.seconds | int(0)))
+           if o is mapping else (o | int(0)) }}
+
+      # Liegt "jetzt" im eingebauten Fenster? Beide Kanten werden auf einen konkreten
+      # Zeitpunkt des heutigen Tages gebracht - Sonnenkanten aus next_setting /
+      # next_rising plus Versatz, Uhrzeit-Kanten aus today_at(). Danach ist es ein
+      # simpler Intervallvergleich; liegt das Ende vor dem Beginn, läuft das Fenster
+      # über Mitternacht.
       fenster_an: >-
         {%- if not fenster_konfiguriert -%}false
         {%- else -%}
-        {%- set dunkel = (state_attr('sun.sun', 'elevation') | float(90)) < (v_schwelle | float(0)) -%}
-        {%- set mittag = today_at('12:00') -%}
         {%- set jetzt = now() -%}
-        {%- set s_zeit = today_at(v_fenster_start_uhrzeit) -%}
-        {%- set e_zeit = today_at(v_fenster_ende_uhrzeit) -%}
-        {%- if v_fenster_start == 'sonnenuntergang' and v_fenster_ende == 'sonnenaufgang' -%}
-        {{ dunkel }}
-        {%- elif v_fenster_start == 'sonnenuntergang' -%}
-        {%- if e_zeit >= mittag -%}{{ mittag <= jetzt < e_zeit and dunkel }}
-        {%- else -%}{{ (mittag <= jetzt and dunkel) or jetzt < e_zeit }}{%- endif -%}
-        {%- elif v_fenster_ende == 'sonnenaufgang' -%}
-        {%- if s_zeit >= mittag -%}{{ jetzt >= s_zeit or (jetzt < mittag and dunkel) }}
-        {%- else -%}{{ s_zeit <= jetzt < mittag and dunkel }}{%- endif -%}
-        {%- else -%}
-        {%- if s_zeit < e_zeit -%}{{ s_zeit <= jetzt < e_zeit }}
-        {%- else -%}{{ jetzt >= s_zeit or jetzt < e_zeit }}{%- endif -%}
-        {%- endif -%}
+        {%- set nsu = state_attr('sun.sun', 'next_setting') | as_datetime | as_local -%}
+        {%- set nsa = state_attr('sun.sun', 'next_rising') | as_datetime | as_local -%}
+        {%- set su = nsu if nsu.date() == jetzt.date() else nsu - timedelta(days=1) -%}
+        {%- set sa = nsa if nsa.date() == jetzt.date() else nsa - timedelta(days=1) -%}
+        {%- set start = (su + timedelta(seconds=o_sonnenuntergang | int(0)))
+             if v_fenster_start == 'sonnenuntergang' else today_at(v_fenster_start_uhrzeit) -%}
+        {%- set ende = (sa + timedelta(seconds=o_sonnenaufgang | int(0)))
+             if v_fenster_ende == 'sonnenaufgang' else today_at(v_fenster_ende_uhrzeit) -%}
+        {{ (start <= jetzt < ende) if start < ende else (jetzt >= start or jetzt < ende) }}
         {%- endif -%}
 
       # Vorbedingung: haben alle Entscheidungs-Eingaben einen brauchbaren Zustand?

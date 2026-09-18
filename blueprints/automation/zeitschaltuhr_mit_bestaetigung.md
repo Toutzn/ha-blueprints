@@ -44,24 +44,29 @@ Alle Kombinationen sind erlaubt, auch über Mitternacht hinweg:
 | Reines Uhrzeitfenster | Feste Uhrzeit → Feste Uhrzeit |
 
 **Beide Felder müssen gesetzt sein.** Steht eines auf „Kein Fenster", gilt das Fenster als
-nicht konfiguriert und es zählen nur die Zeitquellen unten. Das ist auch die Vorgabe –
+nicht konfiguriert und es zählen nur die Zeitquellen aus Abschnitt 2. Das ist auch die Vorgabe –
 bestehende Automationen ändern sich durch das Fenster also nicht.
 
-### Die Dämmerungsschwelle
+### Der Versatz in Minuten
 
-Sonnenuntergang und Sonnenaufgang werden über die **Sonnenhöhe** bestimmt, nicht über eine
-Uhrzeit – so wandert die Schaltzeit über das Jahr korrekt mit. Die Schwelle ist der
-Feinregler; nachgerechnet für Aachen (50,78° N):
+Zu jeder Sonnenkante gehört ein Versatz – Minuten vor oder nach dem Ereignis, mit dem
+Minuszeichen für „vorher". Das ist dieselbe Schreibweise wie beim Sonnen-Trigger im
+Automations-Editor.
 
-| Schwelle | Ein am 21.12. | Aus am 21.12. | |
-|---:|---|---|---|
-| `0` | 16:26 | 08:42 | geometrischer Sonnenauf-/-untergang |
-| **`-2`** | **16:42** | **08:27** | **kurz danach – die Vorgabe** |
-| `-6` | 17:12 | 07:56 | Ende der bürgerlichen Dämmerung, deutlich dunkel |
+| Wunsch | Versatz |
+|---|---|
+| Schon in der Dämmerung einschalten | Sonnenuntergang **−30** |
+| Erst wenn es wirklich dunkel ist | Sonnenuntergang **+20** |
+| Genau zum Sonnenuntergang | Sonnenuntergang **0** (Vorgabe) |
+| Morgens erst ausschalten, wenn es sicher hell ist | Sonnenaufgang **+30** |
 
-Ein Minuten-Offset auf „Sonnenuntergang" gibt es bewusst nicht: 30 Minuten sind im Juni
-eine andere Helligkeit als im Dezember, ein Grad Sonnenhöhe ist das ganze Jahr über
-dieselbe. Wer es lieber in Minuten denkt, liest die Umrechnung aus der Tabelle ab.
+Die Sonnenzeiten selbst kommen von Home Assistant und wandern über das Jahr mit; für
+Aachen liegt der Sonnenuntergang am 21.12. gegen 16:33 und am 21.06. gegen 21:53.
+
+Zu bedenken ist nur: 30 Minuten nach Sonnenuntergang sind im Juni eine andere Helligkeit
+als im Dezember, weil die Dämmerung im Sommer länger dauert. Wer über das Jahr gleiche
+Helligkeit will statt gleicher Minuten, nimmt einen Template-Binärsensor auf
+`sun.sun`-`elevation` als zusätzliche Zeitquelle (Rezepte unten).
 
 ### Zusammenspiel mit den Zeitquellen
 
@@ -179,37 +184,75 @@ Soll = Fenster + Zeitquellen, ODER/UND-verknüpft (on / off)
 
 ## Eingaben
 
+Die Oberfläche ist in sieben Abschnitte gegliedert, in der Reihenfolge, in der man beim
+Einrichten denkt: **wann** geschaltet wird, unter welchen **Bedingungen**, **was**
+geschaltet wird, wer von Hand **übersteuern** darf, wie das Schalten **bestätigt** wird,
+und wie **gemeldet** wird.
+
+### 1 · Wann geschaltet werden soll
+
+| Feld | Default | Beschreibung |
+|---|---|---|
+| **Einschalten ab** | Kein Fenster | *Kein Fenster* · *Sonnenuntergang* · *Feste Uhrzeit* |
+| **Versatz zum Sonnenuntergang** | 0 | Minuten vor (−) oder nach (+) dem Sonnenuntergang |
+| **Uhrzeit für den Beginn** | 23:00 | Nur bei „Feste Uhrzeit" |
+| **Ausschalten ab** | Kein Fenster | *Kein Fenster* · *Sonnenaufgang* · *Feste Uhrzeit* |
+| **Versatz zum Sonnenaufgang** | 0 | Minuten vor (−) oder nach (+) dem Sonnenaufgang |
+| **Uhrzeit für das Ende** | 01:00 | Nur bei „Feste Uhrzeit". Liegt sie vor dem Beginn, läuft das Fenster über Mitternacht |
+| **Schaltrichtung** | Beides | *Beides* · *Nur ausschalten* (Sperre) · *Nur einschalten* |
+
+### 2 · Zusätzliche Bedingungen
+
+| Feld | Default | Beschreibung |
+|---|---|---|
+| **Weitere Zeitquellen** | – | Entitäten mit `on`/`off` für alles, was das Fenster nicht abdeckt. Leer lassen, wenn das Fenster genügt |
+| **Verknüpfung** | ODER | *ODER* = eine genügt · *UND* = alle müssen zutreffen. Das Fenster zählt als eine davon |
+
+### 3 · Was geschaltet wird
+
 | Feld | Pflicht | Default | Beschreibung |
 |---|---|---|---|
-| **Zeitquellen** | nein | – | Eine oder mehrere Entitäten mit `on`/`off`, die den Soll-Zustand vorgeben. Leer, wenn das eingebaute Fenster genügt. |
-| **Verknüpfung mehrerer Zeitquellen** | nein | ODER | *ODER* = eine `on` genügt · *UND* = alle müssen `on` sein |
-| **Schaltrichtung** | nein | Beides | *Beides* · *Nur ausschalten* (Sperre) · *Nur einschalten*. Betrifft nur die Zeitquellen. |
-| **Einschalten ab** | nein | Kein Fenster | Beginn des eingebauten Fensters: *Kein Fenster* · *Sonnenuntergang* · *Feste Uhrzeit* |
-| **Uhrzeit für den Beginn** | nein | 23:00 | Nur wirksam bei „Feste Uhrzeit" |
-| **Ausschalten ab** | nein | Kein Fenster | Ende des Fensters: *Kein Fenster* · *Sonnenaufgang* · *Feste Uhrzeit* |
-| **Uhrzeit für das Ende** | nein | 01:00 | Nur wirksam bei „Feste Uhrzeit". Vor 12:00 = nach Mitternacht |
-| **Dämmerungsschwelle** | nein | −2° | Ab welcher Sonnenhöhe es als dunkel gilt |
-| **Master-Schalter** | nein | – | Oberste Ebene, „der Stecker". Alle müssen `on` sein. Hat Vorrang vor der Betriebsart. |
-| **Verhalten bei ausgeschaltetem Master** | nein | Zwangs-Aus | *Zwangs-Aus* = Ziele werden ausgeschaltet · *Handbetrieb* = Automatik hält sich raus |
-| **Zeitschaltuhr aktiv** | nein | – | Betriebsart-Schalter. Leer = kein Handbetrieb, Zeitquellen regieren immer. |
-| **Verhalten bei deaktivierter Zeitschaltuhr** | nein | Handbetrieb | *Handbetrieb* = aktueller Zustand bleibt, du schaltest frei · *Zwangs-Aus* = Ziele werden ausgeschaltet |
-| **Zu schaltende Entitäten** | ja | – | `switch`, `light`, `input_boolean`, `fan`, `media_player` |
-| **Wartezeit vor der Nachprüfung** | nein | 10 s | Bei Funk-Aktoren großzügiger wählen |
-| **Maximale Schaltversuche** | nein | 5 | Wiederholt nur für die Entitäten, die noch nicht reagiert haben |
-| **Zyklische Nachprüfung aktiv** | nein | ein | Korrigiert Abweichungen laufend |
-| **Intervall der Nachprüfung** | nein | 5 min | `/1`, `/5`, `/15` oder `/30` |
-| **Sofort nachregeln, wenn fremd geschaltet wird** | nein | aus | Horcht auf die Ziel-Entitäten selbst, statt bis zum nächsten Nachprüf-Tick zu warten |
-| **Push bei Erfolg an diese Geräte** | nein | – | Geräte mit HA-App, die bei erfolgreichem Schalten einen Push erhalten. Leer = kein Push. |
-| **Push bei Fehlschlag an diese Geräte** | nein | – | Dasselbe für den Fehlerfall. Leer = kein Push. |
-| **Titel der Push-Benachrichtigung** | nein | `Zeitschaltuhr` | Überschrift der Meldung |
-| **Fehlermeldungen bei der zyklischen Nachprüfung** | nein | unterdrücken | Verhindert, dass ein totes Gerät alle paar Minuten meldet |
-| **Fehlschlag als kritische Benachrichtigung** | nein | aus | Push kommt auch bei stummem Telefon durch |
-| **Aktion bei Erfolg** | nein | Logbuch-Eintrag | Zusätzliche Aktion über den Push hinaus |
-| **Aktion bei Fehlschlag** | nein | Persistente Benachrichtigung | Zusätzliche Aktion über den Push hinaus |
+| **Zu schaltende Entitäten** | ja | – | `switch`, `light`, `input_boolean`, `fan`, `media_player` – Entitäten, keine Geräte |
+| **Sofort nachregeln, wenn fremd geschaltet wird** | nein | aus | Horcht auf die Ziele selbst, statt bis zum nächsten Nachprüf-Durchlauf zu warten |
+
+### 4 · Von Hand übersteuern
+
+| Feld | Default | Beschreibung |
+|---|---|---|
+| **Master-Schalter** | – | Oberste Ebene, „der Stecker". Alle müssen `on` sein. Hat Vorrang vor allem anderen |
+| **… und wenn der Master aus ist?** | Zwangs-Aus | *Zwangs-Aus* = Ziele werden ausgeschaltet · *Handbetrieb* = Automatik hält sich raus |
+| **Zeitschaltuhr aktiv** | – | Betriebsart-Schalter. Leer = kein Handbetrieb |
+| **… und wenn die Betriebsart aus ist?** | Handbetrieb | *Handbetrieb* = Zustand bleibt, du schaltest frei · *Zwangs-Aus* = Ziele werden ausgeschaltet |
+
+### 5 · Schaltbestätigung und Selbstheilung
+
+| Feld | Default | Beschreibung |
+|---|---|---|
+| **Wartezeit vor der Nachprüfung** | 10 s | Bei Funk-Aktoren großzügiger wählen |
+| **Maximale Schaltversuche** | 5 | Wiederholt nur für die Entitäten, die noch nicht reagiert haben |
+| **Zyklische Nachprüfung** | ein | Korrigiert Abweichungen laufend |
+| **Intervall der Nachprüfung** | 5 min | `/1`, `/5`, `/15` oder `/30` |
+
+### 6 · Benachrichtigungen aufs Handy
+
+| Feld | Default | Beschreibung |
+|---|---|---|
+| **Push bei Erfolg** | – | Geräte mit HA-App. Leer = kein Push bei Erfolg |
+| **Push bei Fehlschlag** | – | Dasselbe für den Fehlerfall |
+| **Titel der Benachrichtigung** | `Zeitschaltuhr` | Überschrift der Meldung |
+| **Fehlermeldungen aus der Nachprüfung** | unterdrücken | Verhindert, dass ein totes Gerät alle paar Minuten meldet |
+| **Fehlschlag als kritische Benachrichtigung** | aus | Kommt auch bei stummem Telefon durch |
+
+### 7 · Eigene Aktionen
+
+| Feld | Default | Beschreibung |
+|---|---|---|
+| **Aktion bei Erfolg** | Logbuch-Eintrag | Zusätzlich zum Push – **kein** Benachrichtigungsfeld |
+| **Aktion bei Fehlschlag** | Persistente Benachrichtigung | Dasselbe für den Fehlerfall |
 
 ## Push aufs Handy
 
-Dafür genügt es, unter *Push-Benachrichtigungen* die Geräte auszuwählen – getrennt für
+Dafür genügt es, in Abschnitt *6 · Benachrichtigungen aufs Handy* die Geräte auszuwählen – getrennt für
 Erfolg und Fehlschlag. Der Blueprint baut den Notify-Aufruf selbst:
 
 ```yaml
@@ -251,10 +294,11 @@ kann sie löschen.
 ## Rezepte für eigene Zeitquellen
 
 > **Für Sonne und Uhrzeit ist das nicht mehr nötig** – dafür gibt es das eingebaute
-> Zeitfenster weiter oben. Dieses Kapitel bleibt für alles, was darüber hinausgeht:
-> zwei Fenster an einem Tag, Bedingungen mit Anwesenheit, Kalender oder Wetter. Es zeigt
-> zugleich, wie die Fensterlogik im Blueprint rechnet – wer sie nachvollziehen will,
-> findet hier die Herleitung.
+> Zeitfenster weiter oben. Dieses Kapitel bleibt für alles, was darüber hinausgeht: zwei
+> Fenster an einem Tag, Bedingungen mit Anwesenheit, Kalender oder Wetter – und für den
+> Fall, dass über das Jahr gleiche *Helligkeit* statt gleicher Minuten gewünscht ist.
+> Dafür ist die Sonnenhöhe das richtige Maß, und die folgenden Muster zeigen, worauf man
+> dabei achten muss.
 
 Alles über Einstellungen → Geräte & Dienste → **Helfer** → *+ Helfer anlegen* →
 *Template* → *Template für einen Binärsensor*. Das Template vorher unter
@@ -405,7 +449,8 @@ Kein Helfer, kein Template – alles steht in der Automation:
 | Zeitquellen | *leer* |
 | Einschalten ab | **Sonnenuntergang** |
 | Ausschalten ab | **Sonnenaufgang** |
-| Dämmerungsschwelle | −2° (oder −6°, wenn erst bei richtiger Dunkelheit freigegeben werden soll) |
+| Versatz zum Sonnenuntergang | 0 (oder +20, wenn erst bei richtiger Dunkelheit freigegeben werden soll) |
+| Versatz zum Sonnenaufgang | 0 (oder +30, damit erst bei sicherem Tageslicht abgeschaltet wird) |
 | Schaltrichtung | **Nur ausschalten** |
 | Master-Schalter | *leer* |
 | Zeitschaltuhr aktiv | *leer* |
@@ -433,7 +478,7 @@ Handbetrieb, kein Master – nur Zeitquelle und Ziel:
 | Zeitquellen | *leer* |
 | Einschalten ab | **Sonnenuntergang** |
 | Ausschalten ab | **Feste Uhrzeit**, `01:00` |
-| Dämmerungsschwelle | −2° |
+| Versatz zum Sonnenuntergang | 0 |
 | Schaltrichtung | Beides |
 | Master-Schalter | *leer* (oder ein `input_boolean.weihnachtszeit` mit Zwangs-Aus, dann endet die Saison mit einem Klick) |
 | Zeitschaltuhr aktiv | *leer* |
@@ -451,7 +496,7 @@ angeht, und meldet, wenn die Steckdose im Garten gar nicht mehr reagiert.
 | ID | Trigger | Zweck |
 |---|---|---|
 | `zeitquelle` | `state` auf die Zeitquellen, `to: "on"` / `to: "off"` | Regulärer Schaltzeitpunkt |
-| `fenster` | `numeric_state` auf `sun.sun`/`elevation` (unter und über der Schwelle) sowie `time` auf die beiden eingestellten Uhrzeiten | Kanten des eingebauten Fensters |
+| `fenster` | `sun` auf Sonnenuntergang und Sonnenaufgang mit dem eingestellten Versatz sowie `time` auf die beiden eingestellten Uhrzeiten | Kanten des eingebauten Fensters |
 | `schalter` | `state` auf Master-Schalter und Betriebsart, `to: ["on", "off"]` | Sofortige Neubewertung |
 | `ziel` | `state` auf die Ziel-Entitäten, `to: ["on", "off"]` | Fremdes Schalten sofort nachregeln – nur wirksam, wenn die Option eingeschaltet ist |
 | `neustart` | `homeassistant` / `start` | Nach einem Neustart verpasste Schaltzeitpunkte nachholen |
@@ -509,12 +554,17 @@ angeht, und meldet, wenn die Steckdose im Garten gar nicht mehr reagiert.
   dieselbe ODER/UND-Verknüpfung ein, statt eine eigene Vorrangebene zu bekommen. Damit
   bleibt die Entscheidungsmatrix unverändert – es kommt eine Quelle hinzu, keine neue
   Ebene. „Nur bei Dunkelheit und nur wenn jemand da ist" ist dann Fenster + Quelle mit UND.
-- **Sonnenkanten über die Sonnenhöhe, nicht über `sunset`/`sunrise` mit Offset.** Ein
-  Minuten-Offset bedeutet je nach Jahreszeit eine andere Helligkeit; ein Grad Sonnenhöhe
-  ist immer dasselbe. Die Trigger hängen deshalb als `numeric_state` an derselben
-  Schwelle wie die Auswertung – ein `sun`-Trigger würde bei einer Schwelle ungleich 0
-  zum falschen Zeitpunkt feuern, und die Kante fiele bis zum nächsten Nachprüf-Tick
-  unter den Tisch.
+- **Sonnenkanten als `sun`-Trigger mit Versatz in Minuten.** Das ist die Schreibweise,
+  die Home Assistant im Automations-Editor selbst verwendet – wer den Blueprint verlässt
+  und von Hand weiterbaut, findet dieselben Begriffe wieder. Der Versatz steckt als
+  Duration-Eingabe im Trigger *und* in der Auswertung, damit beide zum selben Zeitpunkt
+  umschalten.
+- **Das Fenster rechnet mit Zeitpunkten, nicht mit Tageshälften.** Beide Kanten werden auf
+  einen konkreten Zeitpunkt des heutigen Tages gebracht – die Sonnenkanten aus
+  `next_setting` / `next_rising`, die Uhrzeit-Kanten aus `today_at()`. Danach ist es ein
+  Intervallvergleich, und liegt das Ende vor dem Beginn, läuft das Fenster eben über
+  Mitternacht. Die Tageshälften-Klammer der handgeschriebenen Rezepte entfällt damit
+  ersatzlos – sie war nur nötig, weil „Sonnenhöhe unter x" keine Richtung kennt.
 - **Ein halbes Fenster gilt als kein Fenster.** Steht nur eine der beiden Kanten, gibt es
   keinen definierten Fensterzustand. Statt zu raten (Rest des Tages? bis Mitternacht?)
   wird das Fenster ignoriert – sichtbar daran, dass ohne weitere Zeitquelle gar nichts
@@ -556,6 +606,19 @@ angeht, und meldet, wenn die Steckdose im Garten gar nicht mehr reagiert.
   des Zeitfensters von Hand einschaltet, wird von der zyklischen Nachprüfung innerhalb des
   eingestellten Intervalls wieder überstimmt. Richtige Reihenfolge also: **erst die
   Betriebsart ausschalten, dann von Hand schalten.**
+- **Die Sonnenzeit nach dem Ereignis ist auf wenige Minuten genau.** Für den heutigen
+  Sonnenuntergang rechnet der Blueprint `next_setting` minus einen Tag zurück, sobald das
+  Ereignis vorbei ist. Rund um die Tagundnachtgleiche wandert der Sonnenuntergang täglich
+  um zwei bis vier Minuten, der zurückgerechnete Wert weicht also entsprechend ab. Der
+  `sun`-Trigger feuert trotzdem exakt; im ungünstigen Fall schaltet die Automation erst
+  mit dem nächsten Nachprüf-Durchlauf. Für Beleuchtung ohne Belang – wer es genauer
+  braucht, stellt die Nachprüfung auf „jede Minute".
+- **„Feste Uhrzeit morgens → Sonnenaufgang" wird über Mitternacht gelesen.** Liegt der
+  Sonnenaufgang im Sommer vor der eingestellten Uhrzeit (etwa 06:00 gegen Aufgang 05:23),
+  ergibt das kein leeres Fenster, sondern ein fast tagesfüllendes: ab 06:00 bis zum
+  *nächsten* Sonnenaufgang am Morgen darauf. Das ist die konsequente Lesart eines Fensters,
+  dessen Ende vor seinem Beginn liegt – gewollt ist meist etwas anderes. Für „morgens von
+  06:00 bis es hell wird" gehört die Sonnenbedingung in eine eigene Zeitquelle.
 - **Ein Fenster pro Automation.** Zwei getrennte Fenster an einem Tag (morgens und abends)
   gehen nur über einen `schedule.*`-Helfer als zusätzliche Zeitquelle oder über eine zweite
   Automation.
