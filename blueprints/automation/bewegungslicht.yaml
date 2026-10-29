@@ -13,6 +13,12 @@ blueprint:
     Die Nachlaufzeit beginnt erst, wenn **alle** Melder wieder frei melden.
 
 
+    **Einschalt-Modus (z. B. bei Haustieren):** Wahlweise schaltet Bewegung das Licht
+    selbst ein (*Standard*) oder das Licht wird nur über einen Schalter / Taster
+    eingeschaltet und Bewegung hält es lediglich wach (*Nur Schalter* – etwa wenn abends
+    Katzen durch den Flur laufen).
+
+
     **Dunkelheit** lässt sich auf zwei Wegen prüfen – über den Sonnenstand (mit Versatz
     vor Sonnenuntergang und nach Sonnenaufgang) und über einen Helligkeitssensor in Lux.
     Beide sind einzeln, zusammen (UND) oder alternativ (ODER) nutzbar. So kann man mit der
@@ -84,6 +90,59 @@ blueprint:
               multiple: true
               filter:
                 - domain: light
+                - domain: switch
+                - domain: input_boolean
+
+        einschalt_modus:
+          name: Einschalt-Modus
+          description: >-
+            Wer darf das Licht einschalten?
+
+
+            - **Bewegung (Standard)** – Bewegung (und optional der Schalter unten) schaltet
+              das Licht ein, Bewegung hält es wach.
+
+            - **Nur Schalter (Bewegung hält nur wach)** – Bewegung allein schaltet ein
+              ausgeschaltetes Licht **nicht** ein (praktisch z. B. bei Katzen oder Haustieren
+              im Flur). Erst wenn ein Mensch den Schalter betätigt (oder das Licht direkt am
+              Wandschalter einschaltet), geht das Licht an, bleibt an solange die Melder
+              Bewegung erkennen und geht nach der Nachlaufzeit automatisch wieder aus.
+          default: bewegung
+          selector:
+            select:
+              mode: dropdown
+              options:
+                - label: Bewegung (Standard)
+                  value: bewegung
+                - label: Nur Schalter (Bewegung hält nur wach)
+                  value: nur_schalter
+
+        schalter:
+          name: Schalter / Taster zum Einschalten
+          description: >-
+            Optional im Modus „Bewegung", empfohlen im Modus „Nur Schalter": Separate
+            Schalter- oder Taster-Entitäten (z. B. Zigbee-Taster, Shelly im Detached-Mode,
+            `button.*`, `event.*`, `binary_sensor.*`, `switch.*`), die das Licht über diesen
+            Blueprint einschalten sollen.
+
+
+            Beim Auslösen über diesen Schalter wird die **Dunkelheitsprüfung übersprungen**
+            (wer drückt, will Licht), die eingestellte Helligkeit / Nachthelligkeit wird aber
+            angewendet.
+
+
+            *Hinweis:* Schaltet der Wandschalter das Licht bereits direkt elektrisch ein, kann
+            dieses Feld leer bleiben – das fängt die Option „Auf manuelles Einschalten
+            reagieren" weiter unten automatisch auf.
+          default: []
+          selector:
+            entity:
+              multiple: true
+              filter:
+                - domain: button
+                - domain: input_button
+                - domain: event
+                - domain: binary_sensor
                 - domain: switch
                 - domain: input_boolean
 
@@ -487,6 +546,20 @@ triggers:
     entity_id: !input bewegungsmelder
     to: "on"
 
+  # Separater Schalter / Taster zum Einschalten. "not_from" und "not_to" filtern
+  # Verfügbarkeitswechsel heraus; bei binary_sensor/switch/input_boolean prüft
+  # "ausloeser_gueltig" zusätzlich auf "to == 'on'", während button/input_button/event
+  # bei jedem Druck ihren Zeitstempel-State ändern.
+  - trigger: state
+    id: schalter
+    entity_id: !input schalter
+    not_from:
+      - unavailable
+      - unknown
+    not_to:
+      - unavailable
+      - unknown
+
   # Manuelles Einschalten: damit auch ohne vorherige Bewegung eine Abschaltung folgt.
   # "from: off" schließt Attributänderungen eines bereits brennenden Lichts aus
   # (Helligkeit, Farbe) - sonst würde jedes Dimmen die Nachlaufzeit neu starten.
@@ -513,6 +586,8 @@ conditions:
 variables:
   v_melder: !input bewegungsmelder
   v_lichter: !input lichter
+  v_einschalt_modus: !input einschalt_modus
+  v_schalter: !input schalter
   v_nachlaufzeit: !input nachlaufzeit
   v_sicherheits_timeout: !input sicherheits_timeout
   v_dunkel_modus: !input dunkel_modus
@@ -532,13 +607,35 @@ variables:
   v_push_geraete: !input push_geraete_fehler
   v_push_kritisch: !input push_kritisch
 
-  # Ist der Auslöser echt? Ein "manuell"-Trigger ohne parent_id kam von Hand
-  # (Wandschalter, App, Sprache). Mit parent_id steckt eine Automation oder ein Skript
-  # dahinter - allen voran diese hier, wenn sie gerade selbst eingeschaltet hat.
+  # Brennt bereits mindestens eines der gesteuerten Lichter?
+  licht_bereits_an: >-
+    {{ expand(v_lichter) | selectattr('state', 'eq', 'on') | list | count > 0 }}
+
+  # Ist der Auslöser echt?
+  # - "manuell": nur ohne parent_id (Wandschalter, App, Sprache). Mit parent_id steckt
+  #   eine Automation oder ein Skript dahinter - allen voran diese hier beim Einschalten.
+  # - "bewegung": im Modus "nur_schalter" wird Bewegung nur angenommen, wenn das Licht
+  #   bereits an ist (um es wachzuhalten / die Nachlaufzeit neu zu starten). Ist das
+  #   Licht aus, wird der Bewegungs-Trigger verworfen (Katzen-Modus).
+  # - "schalter": bei Zustands-Entitäten (switch, binary_sensor, input_boolean) zählt nur
+  #   das Einschalten (to == 'on'), bei Tastern (button, input_button, event) jeder Druck
+  #   mit verändertem State (ohne reine Attribut-Updates).
   ausloeser_gueltig: >-
-    {{ trigger is not defined
-       or trigger.id | default('') != 'manuell'
-       or (v_manueller_trigger and trigger.to_state.context.parent_id is none) }}
+    {% if trigger is not defined %}
+      true
+    {% elif trigger.id | default('') == 'manuell' %}
+      {{ v_manueller_trigger and trigger.to_state.context.parent_id is none }}
+    {% elif trigger.id | default('') == 'bewegung' %}
+      {{ v_einschalt_modus != 'nur_schalter' or licht_bereits_an }}
+    {% elif trigger.id | default('') == 'schalter' %}
+      {{ trigger.from_state is not none
+         and trigger.to_state is not none
+         and trigger.from_state.state != trigger.to_state.state
+         and (trigger.to_state.domain in ['button', 'input_button', 'event']
+              or trigger.to_state.state == 'on') }}
+    {% else %}
+      true
+    {% endif %}
 
   # Sperre zum Startzeitpunkt. Vor dem Ausschalten wird sie erneut ausgewertet.
   sperre_aktiv: >-
@@ -567,7 +664,8 @@ variables:
        | map(attribute='entity_id') | list }}
 
 actions:
-  # 1. Einschalten - nur bei Bewegung, nur wenn dunkel genug, nur was aus ist.
+  # 1. Einschalten - bei Bewegung (wenn dunkel genug und Modus "bewegung") oder bei Schalter
+  #    (immer ohne Dunkelheitsprüfung), jeweils nur für Ziele, die gerade aus sind.
   #    Die Dunkelheitsprüfung sitzt bewusst hier und nicht im "conditions"-Block:
   #    ein Durchlauf muss auch tagsüber bis zum Ausschalten kommen, sonst bliebe
   #    von Hand eingeschaltetes Licht am Tag ewig an.
@@ -576,11 +674,14 @@ actions:
       - conditions:
           - condition: template
             value_template: >-
-              {{ trigger.id | default('') == 'bewegung'
+              {{ (trigger.id | default('') == 'schalter'
+                  or (trigger.id | default('') == 'bewegung'
+                      and v_einschalt_modus != 'nur_schalter'))
                  and offen_start | count > 0
                  and not (sperre_aktiv
                           and v_sperr_verhalten in ['beides', 'nur_einschalten']) }}
-          # Dunkelheit: die fünf Modi als eine ODER-Verknüpfung.
+          # Dunkelheit: beim Schalter-Trigger immer erfüllt; bei Bewegung die fünf Modi
+          # als ODER-Verknüpfung.
           # 'sonne'        -> nur der Sonnen-Zweig, Lux-Klausel immer wahr
           # 'beides_und'   -> Sonnen-Zweig zusätzlich mit lux_ok
           # 'beides_oder'  -> Sonnen-Zweig oder Lux-Zweig
@@ -588,7 +689,9 @@ actions:
           - condition: or
             conditions:
               - condition: template
-                value_template: "{{ v_dunkel_modus == 'immer' }}"
+                value_template: >-
+                  {{ trigger.id | default('') == 'schalter'
+                     or v_dunkel_modus == 'immer' }}
               - condition: and
                 conditions:
                   - condition: template

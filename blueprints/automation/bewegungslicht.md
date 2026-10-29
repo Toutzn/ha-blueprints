@@ -16,11 +16,13 @@ Licht bei Bewegung einschalten und nach einer Nachlaufzeit ohne Bewegung wieder 
 3. **Schaltbestätigung in beide Richtungen.** Nach jedem Befehl wird der Ist-Zustand
    zurückgelesen, bei Bedarf wiederholt und ein endgültiger Fehlschlag gemeldet.
 
-Dazu kommt der Umgang mit manuellem Schalten: Wer am Wandschalter einschaltet, bekommt die
-automatische Abschaltung trotzdem — und wer während der Wartezeit von Hand ausschaltet,
-wird nicht überstimmt.
+Dazu kommt der Umgang mit manuellem Schalten und Haustieren: Wer am Wandschalter oder über
+einen separaten Taster einschaltet, bekommt die automatische Abschaltung trotzdem — und im
+Modus **„Nur Schalter"** schaltet Bewegung ein ausgeschaltetes Licht gar nicht erst ein
+(z. B. wenn abends Katzen durch den Flur laufen), hält aber ein von Hand eingeschaltetes
+Licht wach, solange Bewegung erkannt wird.
 
-## Eingaben (25)
+## Eingaben (27)
 
 ### Bewegung und Licht
 
@@ -28,6 +30,8 @@ wird nicht überstimmt.
 |---|---|---|---|
 | `bewegungsmelder` | ja | – | Ein oder mehrere `binary_sensor` (motion / occupancy / presence) |
 | `lichter` | ja | – | Zu schaltende **Entitäten** (`light`, `switch`, `input_boolean`) |
+| `einschalt_modus` | nein | `bewegung` | `bewegung` (Standard) \| `nur_schalter` (Bewegung hält nur wach, z. B. bei Katzen) |
+| `schalter` | nein | `[]` | Separate Schalter-/Taster-Entitäten (`button`, `input_button`, `event`, `binary_sensor`, `switch`, `input_boolean`) zum Einschalten über den Blueprint |
 | `nachlaufzeit` | nein | `60` s | Brenndauer, nachdem der letzte Melder frei gemeldet hat |
 | `sicherheits_timeout` | nein | `0` min | Notbremse für hängende Melder; `0` = aus (harte Grenze 24 h) |
 
@@ -82,14 +86,21 @@ der Entitäten, die nicht reagiert haben), `versuche`, `melde_text`.
 
 ## Ablauf
 
-0. **Torwächter im `conditions`-Block** (nicht als Aktion, siehe unten): Ein
-   `manuell`-Auslöser zählt nur, wenn er wirklich von Hand kam
-   (siehe [Designentscheidungen](#warum-der-kontext-des-zustandswechsels-geprüft-wird)),
-   und bei einer Vollsperre wird der Auslöser gar nicht erst angenommen.
-1. **Einschalten** — nur bei Bewegung, nur wenn es dunkel genug ist, nur für Ziele, die
-   gerade aus sind. `light.*`-Ziele bekommen dabei die eingestellte Helligkeit,
-   alles andere `homeassistant.turn_on`. Danach Ist-Zustand zurücklesen, für die
-   Nachzügler wiederholen, bei endgültigem Fehlschlag melden.
+0. **Torwächter im `conditions`-Block** (nicht als Aktion, siehe unten):
+   - Ein `manuell`-Auslöser zählt nur, wenn er wirklich von Hand kam
+     (siehe [Designentscheidungen](#warum-der-kontext-des-zustandswechsels-geprüft-wird)).
+   - Im Modus `nur_schalter` wird ein `bewegung`-Auslöser nur angenommen, wenn das Licht
+     bereits brennt (um die Nachlaufzeit zurückzusetzen). Ist das Licht aus, wird die
+     Bewegung schon im `conditions`-Block verworfen.
+   - Ein `schalter`-Auslöser zählt bei Zustands-Entitäten (`switch`, `binary_sensor`,
+     `input_boolean`) nur beim Wechsel auf `'on'` und bei Tastern (`button`, `input_button`,
+     `event`) bei jedem echten Druck (ohne reine Attribut-Änderungen).
+   - Bei einer Vollsperre wird der Auslöser gar nicht erst angenommen.
+1. **Einschalten** — bei Bewegung (wenn Modus `bewegung` und dunkel genug) oder über einen
+   separaten `schalter` (immer ohne Dunkelheitsprüfung), jeweils nur für Ziele, die
+   gerade aus sind. `light.*`-Ziele bekommen dabei die eingestellte Helligkeit (inkl.
+   Nachtmodus), alles andere `homeassistant.turn_on`. Danach Ist-Zustand zurücklesen, für
+   die Nachzügler wiederholen, bei endgültigem Fehlschlag melden.
 2. **Warten, bis alle Melder frei melden** (mit Sicherheits-Timeout).
 3. **Nachlaufzeit** — als Wartebedingung, damit ein manuelles Aus sofort abbricht.
 4. **Ausschalten**, sofern noch etwas nicht aus ist und keine Sperre greift — wieder mit
@@ -102,8 +113,9 @@ also von vorn. Ein Timer-Helfer ist dafür nicht nötig.
 
 | ID | Trigger | Zweck |
 |---|---|---|
-| `bewegung` | `state` auf die Melder, `to: 'on'` | Einschalten und Zeit zurücksetzen |
-| `manuell` | `state` auf die Lichter, `from: 'off'` `to: 'on'` | Abschaltung auch nach manuellem Einschalten |
+| `bewegung` | `state` auf die Melder, `to: 'on'` | Einschalten (im Modus `bewegung`) und Nachlaufzeit zurücksetzen |
+| `schalter` | `state` auf die Schalter-/Taster-Entitäten | Einschalten über separaten Taster/Schalter (ohne Dunkelheitsprüfung) |
+| `manuell` | `state` auf die Lichter, `from: 'off'` `to: 'on'` | Abschaltung auch nach direktem Einschalten am Lichtaktor |
 
 `mode: restart`, `max_exceeded: silent`.
 
