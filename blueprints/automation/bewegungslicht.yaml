@@ -107,6 +107,13 @@ blueprint:
               im Flur). Erst wenn ein Mensch den Schalter betätigt (oder das Licht direkt am
               Wandschalter einschaltet), geht das Licht an, bleibt an solange die Melder
               Bewegung erkennen und geht nach der Nachlaufzeit automatisch wieder aus.
+
+            - **Bewegung nur im Zeitfenster (sonst nur Schalter)** – Innerhalb des unten
+              eingestellten Zeitfensters (wahlweise per Uhrzeit, Sonnenaufgang oder
+              Sonnenuntergang, z. B. morgens ab `05:30` bis Sonnenaufgang oder von `06:00`
+              bis `20:00` Uhr) schaltet Bewegung das Licht normal ein. Außerhalb dieses
+              Fensters schaltet nur der Schalter ein und Bewegung hält das Licht lediglich
+              wach.
           default: bewegung
           selector:
             select:
@@ -116,6 +123,70 @@ blueprint:
                   value: bewegung
                 - label: Nur Schalter (Bewegung hält nur wach)
                   value: nur_schalter
+                - label: Bewegung nur im Zeitfenster (sonst nur Schalter)
+                  value: zeitfenster
+
+        bewegung_start_typ:
+          name: Bewegung schaltet ein – Beginn (Quelle)
+          description: >-
+            Nur für den Modus „Bewegung nur im Zeitfenster": Womit beginnt das Zeitfenster,
+            in dem der Bewegungsmelder das Licht selbst einschalten darf?
+
+
+            Bei Sonnenaufgang / Sonnenuntergang wird der jeweilige Versatz aus dem Abschnitt
+            „Wann ist es dunkel genug?" mitverwendet.
+          default: uhrzeit
+          selector:
+            select:
+              mode: dropdown
+              options:
+                - label: Feste Uhrzeit
+                  value: uhrzeit
+                - label: Sonnenaufgang (inkl. Versatz)
+                  value: sonnenaufgang
+                - label: Sonnenuntergang (inkl. Versatz)
+                  value: sonnenuntergang
+
+        bewegung_start:
+          name: Bewegung schaltet ein – Ab Uhrzeit
+          description: >-
+            Nur wirksam, wenn oben beim Beginn „Feste Uhrzeit" gewählt ist (z. B. morgens ab
+            `06:00:00`).
+          default: "06:00:00"
+          selector:
+            time:
+
+        bewegung_ende_typ:
+          name: Bewegung schaltet ein – Ende (Quelle)
+          description: >-
+            Nur für den Modus „Bewegung nur im Zeitfenster": Womit endet das Zeitfenster, in
+            dem der Bewegungsmelder selbst einschalten darf? Ab diesem Zeitpunkt schaltet nur
+            noch der Schalter ein und Bewegung hält lediglich wach.
+
+
+            Tipp: Mit Beginn = `05:30:00` (Feste Uhrzeit) und Ende = `Sonnenaufgang` schaltet
+            der Melder morgens automatisch ein, bis es hell ist, und bleibt abends/nachts im
+            Schalter-Modus.
+          default: uhrzeit
+          selector:
+            select:
+              mode: dropdown
+              options:
+                - label: Feste Uhrzeit
+                  value: uhrzeit
+                - label: Sonnenaufgang (inkl. Versatz)
+                  value: sonnenaufgang
+                - label: Sonnenuntergang (inkl. Versatz)
+                  value: sonnenuntergang
+
+        bewegung_ende:
+          name: Bewegung schaltet ein – Bis Uhrzeit
+          description: >-
+            Nur wirksam, wenn oben beim Ende „Feste Uhrzeit" gewählt ist (z. B. abends bis
+            `20:00:00`). Ein Zeitfenster über Mitternacht ist ebenfalls erlaubt.
+          default: "20:00:00"
+          selector:
+            time:
 
         schalter:
           name: Schalter / Taster zum Einschalten
@@ -587,6 +658,12 @@ variables:
   v_melder: !input bewegungsmelder
   v_lichter: !input lichter
   v_einschalt_modus: !input einschalt_modus
+  v_bewegung_start_typ: !input bewegung_start_typ
+  v_bewegung_start: !input bewegung_start
+  v_bewegung_ende_typ: !input bewegung_ende_typ
+  v_bewegung_ende: !input bewegung_ende
+  v_offset_su: !input offset_sonnenuntergang
+  v_offset_sa: !input offset_sonnenaufgang
   v_schalter: !input schalter
   v_nachlaufzeit: !input nachlaufzeit
   v_sicherheits_timeout: !input sicherheits_timeout
@@ -611,12 +688,44 @@ variables:
   licht_bereits_an: >-
     {{ expand(v_lichter) | selectattr('state', 'eq', 'on') | list | count > 0 }}
 
+  # Darf der Bewegungsmelder aktuell ein ausgeschaltetes Licht einschalten?
+  # - 'bewegung': immer
+  # - 'nur_schalter': nie (Bewegung hält nur wach)
+  # - 'zeitfenster': zwischen Beginn und Ende (wahlweise feste Uhrzeit, Sonnenaufgang oder
+  #   Sonnenuntergang inkl. Versatz)
+  bewegung_darf_einschalten: >-
+    {% if v_einschalt_modus == 'nur_schalter' %}
+      false
+    {% elif v_einschalt_modus == 'zeitfenster' %}
+      {% set jetzt = now() %}
+      {% set nsu = state_attr('sun.sun', 'next_setting') | as_datetime | as_local %}
+      {% set nsa = state_attr('sun.sun', 'next_rising') | as_datetime | as_local %}
+      {% set su_base = nsu if nsu.date() == jetzt.date() else nsu - timedelta(days=1) %}
+      {% set sa_base = nsa if nsa.date() == jetzt.date() else nsa - timedelta(days=1) %}
+      {% set su_str = (v_offset_su | string | trim) %}
+      {% set su_neg = su_str.startswith('-') %}
+      {% set su_p = su_str.lstrip('+-').split(':') %}
+      {% set su_sec = ((su_p[0]|int(0))*3600 + (su_p[1]|int(0) if su_p|count > 1 else 0)*60 + (su_p[2]|int(0) if su_p|count > 2 else 0)) * (-1 if su_neg else 1) %}
+      {% set sa_str = (v_offset_sa | string | trim) %}
+      {% set sa_neg = sa_str.startswith('-') %}
+      {% set sa_p = sa_str.lstrip('+-').split(':') %}
+      {% set sa_sec = ((sa_p[0]|int(0))*3600 + (sa_p[1]|int(0) if sa_p|count > 1 else 0)*60 + (sa_p[2]|int(0) if sa_p|count > 2 else 0)) * (-1 if sa_neg else 1) %}
+      {% set su = su_base + timedelta(seconds=su_sec) %}
+      {% set sa = sa_base + timedelta(seconds=sa_sec) %}
+      {% set start = sa if v_bewegung_start_typ == 'sonnenaufgang' else (su if v_bewegung_start_typ == 'sonnenuntergang' else today_at(v_bewegung_start)) %}
+      {% set ende = sa if v_bewegung_ende_typ == 'sonnenaufgang' else (su if v_bewegung_ende_typ == 'sonnenuntergang' else today_at(v_bewegung_ende)) %}
+      {{ (start <= jetzt and jetzt < ende) if start <= ende else (jetzt >= start or jetzt < ende) }}
+    {% else %}
+      true
+    {% endif %}
+
   # Ist der Auslöser echt?
   # - "manuell": nur ohne parent_id (Wandschalter, App, Sprache). Mit parent_id steckt
   #   eine Automation oder ein Skript dahinter - allen voran diese hier beim Einschalten.
-  # - "bewegung": im Modus "nur_schalter" wird Bewegung nur angenommen, wenn das Licht
-  #   bereits an ist (um es wachzuhalten / die Nachlaufzeit neu zu starten). Ist das
-  #   Licht aus, wird der Bewegungs-Trigger verworfen (Katzen-Modus).
+  # - "bewegung": wenn Bewegung aktuell nicht selbst einschalten darf (Modus "nur_schalter"
+  #   oder außerhalb des Zeitfensters), wird sie nur angenommen, wenn das Licht bereits an
+  #   ist (um es wachzuhalten / die Nachlaufzeit neu zu starten). Ist das Licht aus, wird
+  #   der Bewegungs-Trigger verworfen (Katzen-Modus).
   # - "schalter": bei Zustands-Entitäten (switch, binary_sensor, input_boolean) zählt nur
   #   das Einschalten (to == 'on'), bei Tastern (button, input_button, event) jeder Druck
   #   mit verändertem State (ohne reine Attribut-Updates).
@@ -626,7 +735,7 @@ variables:
     {% elif trigger.id | default('') == 'manuell' %}
       {{ v_manueller_trigger and trigger.to_state.context.parent_id is none }}
     {% elif trigger.id | default('') == 'bewegung' %}
-      {{ v_einschalt_modus != 'nur_schalter' or licht_bereits_an }}
+      {{ bewegung_darf_einschalten or licht_bereits_an }}
     {% elif trigger.id | default('') == 'schalter' %}
       {{ trigger.from_state is not none
          and trigger.to_state is not none
@@ -676,7 +785,7 @@ actions:
             value_template: >-
               {{ (trigger.id | default('') == 'schalter'
                   or (trigger.id | default('') == 'bewegung'
-                      and v_einschalt_modus != 'nur_schalter'))
+                      and bewegung_darf_einschalten))
                  and offen_start | count > 0
                  and not (sperre_aktiv
                           and v_sperr_verhalten in ['beides', 'nur_einschalten']) }}
