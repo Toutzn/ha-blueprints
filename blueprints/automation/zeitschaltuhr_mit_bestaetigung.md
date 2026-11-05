@@ -496,7 +496,7 @@ angeht, und meldet, wenn die Steckdose im Garten gar nicht mehr reagiert.
 | ID | Trigger | Zweck |
 |---|---|---|
 | `zeitquelle` | `state` auf die Zeitquellen, `to: "on"` / `to: "off"` | Regulärer Schaltzeitpunkt |
-| `fenster` | `sun` auf Sonnenuntergang und Sonnenaufgang mit dem eingestellten Versatz sowie `time` auf die beiden eingestellten Uhrzeiten | Kanten des eingebauten Fensters |
+| `fenster_su`, `fenster_sa`, `fenster_start_zeit`, `fenster_ende_zeit` | `sun` auf Sonnenuntergang und Sonnenaufgang mit dem eingestellten Versatz sowie `time` auf die beiden eingestellten Uhrzeiten | Kanten des eingebauten Fensters – nur die jeweils konfigurierte Kante wird verarbeitet |
 | `schalter` | `state` auf Master-Schalter und Betriebsart, `to: ["on", "off"]` | Sofortige Neubewertung |
 | `ziel` | `state` auf die Ziel-Entitäten, `to: ["on", "off"]` | Fremdes Schalten sofort nachregeln – nur wirksam, wenn die Option eingeschaltet ist |
 | `neustart` | `homeassistant` / `start` | Nach einem Neustart verpasste Schaltzeitpunkte nachholen |
@@ -625,8 +625,8 @@ angeht, und meldet, wenn die Steckdose im Garten gar nicht mehr reagiert.
 - **Die Fenster-Trigger feuern auch, wenn das Fenster nicht benutzt wird.** Die beiden
   Zeit-Trigger hängen an den eingestellten Uhrzeiten (Vorgabe 23:00 und 01:00), die
   Sonnen-Trigger an der Dämmerungsschwelle – ein Trigger-Block lässt sich in einem
-  Blueprint nicht per Eingabe weglassen. Solche Läufe enden beim Soll-Ist-Vergleich, ohne
-  zu schalten und ohne zu melden; sie belegen nur einen Trace-Platz.
+  Blueprint nicht per Eingabe weglassen. Solche Läufe werden direkt in Schritt 1c
+  verworfen, ohne zu schalten und ohne zu melden; sie belegen nur einen Trace-Platz.
 - **Sofortiges Nachregeln füllt den Trace-Puffer.** Jeder eigene Schaltvorgang löst den
   Ziel-Trigger mit aus. Der Folgelauf findet Soll = Ist und endet sofort, belegt aber einen
   der standardmäßig **5** gespeicherten Traces – der interessante Lauf ist dann schneller

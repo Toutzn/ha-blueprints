@@ -499,10 +499,13 @@ blueprint:
           default:
             - action: persistent_notification.create
               data:
-                title: Zeitschaltuhr – Schaltfehler
+                notification_id: "{{ push_tag }}"
+                title: "{{ this.attributes.friendly_name | default('Zeitschaltuhr') }} – Schaltfehler"
                 message: >-
-                  {{ grund_text }}: konnte nach {{ versuche }} Versuch(en) nicht auf
-                  '{{ soll_zustand }}' schalten – {{ restliche | join(', ') }}
+                  {{ grund_text }}:
+                  {%- if restliche | count > 0 %} konnte nach {{ versuche }} Versuch(en) nicht auf '{{ soll_zustand }}' schalten – {{ restliche | join(', ') }}{% endif -%}
+                  {%- if restliche | count > 0 and nicht_erreichbar | count > 0 %}; {% endif -%}
+                  {%- if nicht_erreichbar | count > 0 %} nicht erreichbar – {{ nicht_erreichbar | join(', ') }}{% endif %}
           selector:
             action: {}
 
@@ -544,22 +547,22 @@ triggers:
 
   # Kanten des eingebauten Fensters: die beiden Sonnenereignisse mit ihrem Versatz und
   # die beiden eingestellten Uhrzeiten. Alle vier feuern auch, wenn das Fenster gar nicht
-  # benutzt wird - ein Trigger-Block lässt sich nicht per Eingabe weglassen. Solche Läufe
-  # enden beim Soll-Ist-Vergleich, ohne zu schalten und ohne zu melden.
+  # benutzt wird - ein Trigger-Block lässt sich nicht per Eingabe weglassen. Nicht
+  # aktive Kanten werden unten in Schritt 1c direkt verworfen.
   - trigger: sun
     event: sunset
     offset: !input fenster_su_offset
-    id: fenster
+    id: fenster_su
   - trigger: sun
     event: sunrise
     offset: !input fenster_sa_offset
-    id: fenster
+    id: fenster_sa
   - trigger: time
     at: !input fenster_start_uhrzeit
-    id: fenster
+    id: fenster_start_zeit
   - trigger: time
     at: !input fenster_ende_uhrzeit
-    id: fenster
+    id: fenster_ende_zeit
 
   # Selbstheilung
   - trigger: homeassistant
@@ -617,6 +620,23 @@ actions:
       {{ trigger is not defined
          or (trigger.id | default('manuell')) != 'ziel'
          or v_ziel_trigger }}
+
+  # 1c. Eingebaute Fenster-Trigger nur verarbeiten, wenn das Fenster überhaupt genutzt
+  #     wird und genau diese Kante eingestellt ist. Verhindert, dass ungenutzte
+  #     Default-Trigger (z. B. 23:00 / 01:00) bei "unavailable"-Zielen Fehlermeldungen
+  #     auslösen.
+  - alias: Fenster-Trigger respektieren
+    condition: template
+    value_template: >-
+      {% set tid = trigger.id | default('manuell') if trigger is defined else 'manuell' %}
+      {% set aktiv = v_fenster_start != 'keins' and v_fenster_ende != 'keins' %}
+      {{ tid not in ['fenster_su', 'fenster_sa', 'fenster_start_zeit', 'fenster_ende_zeit']
+         or (aktiv and (
+              (tid == 'fenster_su' and v_fenster_start == 'sonnenuntergang')
+              or (tid == 'fenster_start_zeit' and v_fenster_start == 'uhrzeit')
+              or (tid == 'fenster_sa' and v_fenster_ende == 'sonnenaufgang')
+              or (tid == 'fenster_ende_zeit' and v_fenster_ende == 'uhrzeit')
+            )) }}
 
   # 2. Lagebild ERST JETZT erheben - beim Ausführen, nicht beim Auslösen.
   #    Wartete dieser Lauf in der Warteschlange, hat der vorherige eventuell schon
@@ -729,7 +749,7 @@ actions:
            | selectattr('state', 'ne', soll_zustand) | list | count %}
       {% set weg = expand(ziel_liste)
            | rejectattr('state', 'in', ['on', 'off']) | list | count %}
-      {{ schaltbar > 0 or (weg > 0 and melden_erlaubt) }}
+      {{ schaltbar > 0 or (weg > 0 and melden_erlaubt and grund != 'nachgeregelt') }}
 
   # 5. Schalten, warten, nachprüfen – und nur die Nachzügler erneut anstoßen.
   #    "while" statt "until": die Bedingung wird VOR jedem Durchgang geprüft. Gibt es
@@ -801,8 +821,12 @@ actions:
 
   # 8. Zusaetzliche frei definierte Aktionen
   - alias: Zusatzaktion bei Erfolg oder Fehlschlag
-    if:
-      - condition: template
-        value_template: "{{ erfolg }}"
-    then: !input aktion_bei_erfolg
-    else: !input aktion_bei_fehler
+    choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ erfolg }}"
+        sequence: !input aktion_bei_erfolg
+      - conditions:
+          - condition: template
+            value_template: "{{ melden_erlaubt }}"
+        sequence: !input aktion_bei_fehler
